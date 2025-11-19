@@ -1,0 +1,78 @@
+{
+  "name": "azsl-basic",
+  "displayName": "AZSL Basic",
+  "description": "Minimal syntax highlighting and language configuration for AZSL (O3DE/Atom).",
+  "publisher": "local",
+  "version": "0.0.1",
+  "license": "MIT",
+  "icon": "icon.png",
+  "engines": {
+    "vscode": "^1.70.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:azsl",
+    "onCommand:azsl.reindex",
+    "onCommand:azsl.setGemPath"
+  ],
+  "contributes": {
+    "configuration": {
+      "title": "AZSL",
+      "properties": {
+        "azsl.gemPath": {
+          "type": "string",
+          "default": "D:\\\\O3DE\\\\Gems\\\\Atom",
+          "description": "Path to Atom Gem directory (e.g. D:\\O3DE\\Gems\\Atom).",
+          "scope": "window"
+        },
+        "azsl.headersPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Deprecated. Use `azsl.gemPath`.",
+          "scope": "window"
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "azsl.reindex",
+        "title": "AZSL: Reindex Atom Headers"
+      },
+      {
+        "command": "azsl.setGemPath",
+        "title": "AZSL: Set Gem Path"
+      }
+    ],
+    "languages": [
+      {
+        "id": "azsl",
+        "aliases": [
+          "AZSL",
+          "azsl"
+        ],
+        "extensions": [
+          ".azsl",
+          ".azsli"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "azsl",
+        "path": "./snippets/azsl.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "azsl",
+        "scopeName": "source.azsl",
+        "path": "./syntaxes/azsl.tmLanguage.json"
+      }
+    ]
+  }
+}
+
