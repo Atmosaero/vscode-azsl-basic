@@ -40,8 +40,3 @@ Or use the command palette (`Ctrl+Shift+P`) and run `AZSL: Set Gem Path`.
 
 - **AZSL: Reindex Atom Headers** - Manually trigger reindexing of Atom Gem headers
 - **AZSL: Set Gem Path** - Set the path to Atom Gem directory
-
-## License
-
-MIT
-
