@@ -18,12 +18,6 @@ A VS Code extension providing language support for AZSL (Amazon Shading Language
   - Incomplete member access
 - **Header Indexing** - Automatically indexes Atom Gem headers for enhanced IntelliSense
 
-## Installation
-
-1. Clone or download this repository
-2. Open VS Code
-3. Press `F1` and run `Extensions: Install from VSIX...` (if packaged) or install from folder
-
 ## Configuration
 
 Set the path to your Atom Gem directory in VS Code settings:
