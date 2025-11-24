@@ -107,7 +107,7 @@
         },
         {
           "name": "keyword.other.azsl",
-          "match": "\\b(cbuffer|tbuffer|struct|namespace|class|inline|static|const|groupshared|uniform|volatile|option|noperspective)\\b"
+          "match": "\\b(cbuffer|tbuffer|struct|namespace|class|inline|static|const|groupshared|uniform|volatile|option|noperspective|void|precise)\\b"
         }
       ]
     },

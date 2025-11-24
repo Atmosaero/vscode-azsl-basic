@@ -9,6 +9,13 @@ let macroIndex = new Map();
 let atomMethodIndex = new Map();
 let atomTypeMembers = new Map();
 let srgSemanticIndex = new Map();
+let srgMembers = new Map();
+let srgMemberIndex = new Map();
+let srgIndex = new Map();
+let structIndex = new Map();
+let structMembers = new Map();
+let functionIndex = new Map();
+let optionIndex = new Map();
 
 let disposables = [];
 
@@ -75,7 +82,9 @@ const builtinDocs = new Map(Object.entries({
     Clamp: "**Address Mode: Clamp**\n\nClamps texture coordinates to the edge. Out-of-range coordinates use the edge color.\n\n**Usage:**\n```hlsl\nAddressU = Clamp;\nAddressV = Clamp;\n```\n\n**Characteristics:**\n- No tiling, texture appears once\n- Edge colors extend beyond [0, 1] range\n- Good for non-repeating textures\n\n**Note:** This is an address mode value used in sampler initialization.",
     Mirror: "**Address Mode: Mirror**\n\nMirrors the texture at edges. Texture flips when coordinates exceed [0, 1].\n\n**Usage:**\n```hlsl\nAddressU = Mirror;\nAddressV = Mirror;\n```\n\n**Characteristics:**\n- Texture mirrors at boundaries\n- Creates seamless tiling with mirrored pattern\n- Less common than Wrap or Clamp\n\n**Note:** This is an address mode value used in sampler initialization.",
     Border: "**Address Mode: Border**\n\nUses a border color for out-of-range coordinates.\n\n**Usage:**\n```hlsl\nAddressU = Border;\nAddressV = Border;\n```\n\n**Characteristics:**\n- Out-of-range coordinates use border color (typically black)\n- Useful for special effects\n- Less common than other modes\n\n**Note:** This is an address mode value used in sampler initialization.",
-    Filter: "**Reduction Type: Filter**\n\nStandard filtering reduction type. Used for normal texture sampling.\n\n**Usage:**\n```hlsl\nReductionType = Filter;\n```\n\n**Note:** This is a reduction type value used in sampler initialization."
+    Filter: "**Reduction Type: Filter**\n\nStandard filtering reduction type. Used for normal texture sampling.\n\n**Usage:**\n```hlsl\nReductionType = Filter;\n```\n\n**Note:** This is a reduction type value used in sampler initialization.",
+    StructuredBuffer: "**Built-in Type: StructuredBuffer<T>**\n\nStructured buffer resource type in HLSL/AZSL. Represents a buffer containing an array of structured data (structs).\n\n**Declaration:**\n```hlsl\nStructuredBuffer<StructType> bufferName;\n```\n\n**Common Usage:**\n```hlsl\nstruct MyStruct {\n    float3 position;\n    float4 color;\n};\n\nStructuredBuffer<MyStruct> m_instances;\n\nMyStruct instance = m_instances[index];\n```\n\n**Access:**\n- `buffer[index]` - Access element at index\n- `buffer.Load(index)` - Load element at index\n- `buffer.GetDimensions(out uint count)` - Get number of elements\n\n**Note:** This is a built-in HLSL/AZSL type. Used for reading structured data arrays in shaders.",
+    Buffer: "**Built-in Type: Buffer<T>**\n\nBuffer resource type in HLSL/AZSL. Represents a typed buffer containing scalar or vector data.\n\n**Declaration:**\n```hlsl\nBuffer<Type> bufferName;\n```\n\n**Common Usage:**\n```hlsl\nBuffer<float4> m_colors;\nBuffer<uint> m_indices;\n\nfloat4 color = m_colors[index];\nuint idx = m_indices[i];\n```\n\n**Access:**\n- `buffer[index]` - Access element at index\n- `buffer.Load(index)` - Load element at index\n- `buffer.GetDimensions(out uint count)` - Get number of elements\n\n**Note:** This is a built-in HLSL/AZSL type. Used for reading typed data arrays in shaders."
 }));
 
 const semanticDocs = new Map(Object.entries({
@@ -279,6 +288,577 @@ function extractSrgSemantics(text, filePath) {
     return results;
 }
 
+function extractSrgDeclarations(text, filePath) {
+    const results = new Map();
+    const memberLocations = new Map();
+    const lines = text.split(/\r?\n/);
+    
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const match = line.match(/^\s*(?:partial\s+)?ShaderResourceGroup\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*[A-Za-z_][A-Za-z0-9_]*)?/);
+        if (match) {
+            const srgName = match[1];
+            let startLine = i;
+            let braceDepth = 0;
+            
+            if (line.includes('{')) {
+                braceDepth = 1;
+            } else if (i + 1 < lines.length && lines[i + 1].trim().startsWith('{')) {
+                startLine = i + 1;
+                braceDepth = 1;
+            } else {
+                continue;
+            }
+            
+            if (!results.has(srgName)) {
+                results.set(srgName, {
+                    name: srgName,
+                    uri: vscode.Uri.file(filePath),
+                    line: i,
+                    members: new Set()
+                });
+                debugLog(`Found SRG: ${srgName} at ${path.basename(filePath)}:${i + 1}`);
+            }
+            let inString = false;
+            let inComment = false;
+            let commentType = null;
+            
+            for (let j = 0; j < line.length; j++) {
+                if (line[j] === '"' && (j === 0 || line[j-1] !== '\\')) {
+                    inString = !inString;
+                }
+                if (!inString) {
+                    if (line[j] === '/' && j + 1 < line.length && line[j+1] === '/') {
+                        break;
+                    }
+                    if (line[j] === '/' && j + 1 < line.length && line[j+1] === '*') {
+                        inComment = true;
+                        commentType = 'block';
+                        j++;
+                        continue;
+                    }
+                    if (inComment && commentType === 'block' && line[j] === '*' && j + 1 < line.length && line[j+1] === '/') {
+                        inComment = false;
+                        commentType = null;
+                        j++;
+                        continue;
+                    }
+                    if (!inComment) {
+                        if (line[j] === '{') braceDepth++;
+                        else if (line[j] === '}') braceDepth--;
+                    }
+                }
+            }
+            
+            for (let j = startLine + 1; j < lines.length && braceDepth > 0; j++) {
+                const srgLine = lines[j];
+                let lineBraceDepth = 0;
+                inString = false;
+                inComment = false;
+                commentType = null;
+                
+                for (let k = 0; k < srgLine.length; k++) {
+                    if (srgLine[k] === '"' && (k === 0 || srgLine[k-1] !== '\\')) {
+                        inString = !inString;
+                    }
+                    if (!inString) {
+                        if (srgLine[k] === '/' && k + 1 < srgLine.length && srgLine[k+1] === '/') {
+                            break;
+                        }
+                        if (srgLine[k] === '/' && k + 1 < srgLine.length && srgLine[k+1] === '*') {
+                            inComment = true;
+                            commentType = 'block';
+                            k++;
+                            continue;
+                        }
+                        if (inComment && commentType === 'block' && srgLine[k] === '*' && k + 1 < srgLine.length && srgLine[k+1] === '/') {
+                            inComment = false;
+                            commentType = null;
+                            k++;
+                            continue;
+                        }
+                        if (!inComment) {
+                            if (srgLine[k] === '{') lineBraceDepth++;
+                            else if (srgLine[k] === '}') lineBraceDepth--;
+                        }
+                    }
+                }
+                
+                braceDepth += lineBraceDepth;
+                
+                if (braceDepth > 0 && !inComment) {
+                    const trimmed = srgLine.trim();
+                    if (trimmed && !trimmed.startsWith('//') && !trimmed.startsWith('/*')) {
+                        let angleDepth = 0;
+                        let lastSpaceAfterTemplate = -1;
+                        let foundMember = false;
+                        for (let i = 0; i < trimmed.length; i++) {
+                            if (trimmed[i] === '<') {
+                                angleDepth++;
+                            } else if (trimmed[i] === '>') {
+                                angleDepth--;
+                                if (angleDepth === 0) {
+                                    lastSpaceAfterTemplate = -1;
+                                }
+                            } else if (angleDepth === 0) {
+                                if (trimmed[i] === ' ' || trimmed[i] === '\t') {
+                                    lastSpaceAfterTemplate = i;
+                                } else if (trimmed[i] === ';' || trimmed[i] === '=' || trimmed[i] === '(' || trimmed[i] === '[' || trimmed[i] === '{') {
+                                    if (lastSpaceAfterTemplate >= 0) {
+                                        const memberName = trimmed.substring(lastSpaceAfterTemplate + 1, i).trim();
+                                        if (memberName && /^[A-Za-z_][A-Za-z0-9_]*$/.test(memberName)) {
+                                            if (memberName !== 'ShaderResourceGroup' && memberName !== 'partial' && memberName !== 'static' && memberName !== 'const') {
+                                                results.get(srgName).members.add(memberName);
+                                                const memberKey = `${srgName}::${memberName}`;
+                                                if (!memberLocations.has(memberKey)) {
+                                                    memberLocations.set(memberKey, {
+                                                        uri: vscode.Uri.file(filePath),
+                                                        line: j,
+                                                        srgName: srgName,
+                                                        memberName: memberName
+                                                    });
+                                                    debugLog(`Found SRG member: ${srgName}::${memberName} at ${path.basename(filePath)}:${j + 1}`);
+                                                }
+                                                foundMember = true;
+                                            }
+                                        }
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                        // Check if line ends with a variable name and next line starts with {
+                        if (!foundMember && lastSpaceAfterTemplate >= 0 && j + 1 < lines.length) {
+                            const nextLine = lines[j + 1];
+                            const nextTrimmed = nextLine.trim();
+                            if (nextTrimmed.startsWith('{')) {
+                                const memberName = trimmed.substring(lastSpaceAfterTemplate + 1).trim();
+                                if (memberName && /^[A-Za-z_][A-Za-z0-9_]*$/.test(memberName)) {
+                                    if (memberName !== 'ShaderResourceGroup' && memberName !== 'partial' && memberName !== 'static' && memberName !== 'const') {
+                                        results.get(srgName).members.add(memberName);
+                                        const memberKey = `${srgName}::${memberName}`;
+                                        if (!memberLocations.has(memberKey)) {
+                                            memberLocations.set(memberKey, {
+                                                uri: vscode.Uri.file(filePath),
+                                                line: j,
+                                                srgName: srgName,
+                                                memberName: memberName
+                                            });
+                                            debugLog(`Found SRG member (multiline): ${srgName}::${memberName} at ${path.basename(filePath)}:${j + 1}`);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        const funcMatch = trimmed.match(/^\s*(?:[A-Za-z_][A-Za-z0-9_<>,\s]*\s+)*([A-Za-z_][A-Za-z0-9_]*)\s*\(/);
+                        if (funcMatch) {
+                            const funcName = funcMatch[1];
+                            if (funcName !== 'ShaderResourceGroup' && funcName !== 'partial' && funcName !== 'static' && funcName !== 'const') {
+                                results.get(srgName).members.add(funcName);
+                                const memberKey = `${srgName}::${funcName}`;
+                                if (!memberLocations.has(memberKey)) {
+                                    memberLocations.set(memberKey, {
+                                        uri: vscode.Uri.file(filePath),
+                                        line: j,
+                                        srgName: srgName,
+                                        memberName: funcName
+                                    });
+                                    debugLog(`Found SRG function: ${srgName}::${funcName} at ${path.basename(filePath)}:${j + 1}`);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    return { srgInfo: results, memberLocations: memberLocations };
+}
+
+function extractStructDeclarations(text, filePath) {
+    const results = new Map();
+    const structMembersMap = new Map();
+    const lines = text.split(/\r?\n/);
+    
+    debugLog(`[extractStructDeclarations] Parsing file: ${path.basename(filePath)}, ${lines.length} lines`);
+    
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        // Match struct, class, and typedef declarations
+        let match = line.match(/^\s*(?:struct|class)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*[A-Za-z_][A-Za-z0-9_]*)?/);
+        if (!match) {
+            // Try typedef: typedef struct/class Name { ... } AliasName;
+            // or: typedef ExistingType AliasName;
+            match = line.match(/^\s*typedef\s+(?:struct|class)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*[A-Za-z_][A-Za-z0-9_]*)?/);
+            if (!match) {
+                // Simple typedef: typedef ExistingType AliasName;
+                match = line.match(/^\s*typedef\s+[A-Za-z_][A-Za-z0-9_<>,\s]+\s+([A-Za-z_][A-Za-z0-9_]*)\s*;/);
+            }
+        }
+        if (match) {
+            const structName = match[1];
+            debugLog(`[extractStructDeclarations] Found struct/class declaration: ${structName} at line ${i + 1}, line="${line.trim()}"`);
+            let startLine = i;
+            let braceDepth = 0;
+            let typedefAliasAfterBrace = null;
+            
+            // Check if this is a typedef with alias after closing brace: typedef struct { ... } AliasName;
+            if (line.includes('typedef')) {
+                const aliasMatch = line.match(/}\s+([A-Za-z_][A-Za-z0-9_]*)\s*;/);
+                if (aliasMatch) {
+                    typedefAliasAfterBrace = aliasMatch[1];
+                }
+            }
+            
+            let isSingleLineStruct = false;
+            if (line.includes('{')) {
+                braceDepth = 1;
+                debugLog(`[extractStructDeclarations] Struct ${structName} has { on same line`);
+                // Check if this is a single-line struct: struct Name { ... };
+                if (line.includes('}') && line.includes(';')) {
+                    isSingleLineStruct = true;
+                    braceDepth = 0; // Will be set back to 1 for processing
+                    debugLog(`[extractStructDeclarations] Struct ${structName} is single-line`);
+                }
+            } else if (i + 1 < lines.length && lines[i + 1].trim().startsWith('{')) {
+                debugLog(`[extractStructDeclarations] Struct ${structName} has { on next line (${i + 2})`);
+                startLine = i + 1;
+                braceDepth = 1;
+            } else if (typedefAliasAfterBrace) {
+                // For typedef with alias after brace, we need to find the closing brace
+                // This will be handled in the brace matching loop below
+                continue;
+            } else {
+                // For simple typedef without braces, add it directly
+                if (line.includes('typedef') && !line.includes('struct') && !line.includes('class')) {
+                    if (!results.has(structName)) {
+                        results.set(structName, {
+                            name: structName,
+                            uri: vscode.Uri.file(filePath),
+                            line: i
+                        });
+                        debugLog(`Found typedef: ${structName} at ${path.basename(filePath)}:${i + 1}`);
+                    }
+                }
+                continue;
+            }
+            
+            if (!results.has(structName)) {
+                results.set(structName, {
+                    name: structName,
+                    uri: vscode.Uri.file(filePath),
+                    line: i
+                });
+                structMembersMap.set(structName, new Set());
+                debugLog(`[extractStructDeclarations] Found struct/class: ${structName} at ${path.basename(filePath)}:${i + 1}, line="${line.trim()}"`);
+            } else {
+                debugLog(`[extractStructDeclarations] Struct ${structName} already in results, skipping duplicate at line ${i + 1}`);
+            }
+            
+            const currentMembers = structMembersMap.get(structName);
+            
+            // Handle single-line struct: extract members from the same line
+            if (isSingleLineStruct) {
+                braceDepth = 1; // Set to 1 to process the line
+                const trimmed = line.trim();
+                // Extract content between { and }
+                const braceStart = trimmed.indexOf('{');
+                const braceEnd = trimmed.indexOf('}');
+                if (braceStart >= 0 && braceEnd > braceStart) {
+                    const structContent = trimmed.substring(braceStart + 1, braceEnd).trim();
+                    debugLog(`[extractStructDeclarations] Single-line struct content for ${structName}: '${structContent}'`);
+                    // Split by semicolon to get individual member declarations
+                    const memberDecls = structContent.split(';').filter(s => s.trim().length > 0);
+                    for (const memberDecl of memberDecls) {
+                        const memberTrimmed = memberDecl.trim();
+                        debugLog(`[extractStructDeclarations] Processing member declaration: '${memberTrimmed}'`);
+                        // Match member: precise type name : semantic or type name;
+                        // Support precise, noperspective modifiers
+                        let memberMatch = memberTrimmed.match(/^\s*(?:precise\s+|noperspective\s+)*(?:precise\s+|noperspective\s+)?(?:(?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix(?:[1-4]x[1-4])?|Texture\w*|Sampler(?:State|ComparisonState|\w*)?|[A-Z][A-Za-z0-9_<>,\s]*))\s+([A-Za-z_][A-Za-z0-9_]*)\s*[;:]?/);
+                        if (!memberMatch) {
+                            // Try a more permissive pattern
+                            memberMatch = memberTrimmed.match(/^\s*(?:precise\s+|noperspective\s+)*(?:precise\s+|noperspective\s+)?([A-Za-z_][A-Za-z0-9_<>,\s]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*[;:]?/);
+                        }
+                        if (memberMatch && !memberTrimmed.includes('(') && !memberTrimmed.includes(')') && !memberTrimmed.includes('enum') && !memberTrimmed.includes('struct') && !memberTrimmed.includes('class')) {
+                            const memberName = memberMatch[memberMatch.length - 1];
+                            currentMembers.add(memberName);
+                            debugLog(`Found single-line struct member: ${structName}::${memberName} at ${path.basename(filePath)}:${i + 1}`);
+                        } else {
+                            debugLog(`[extractStructDeclarations] No match for member: '${memberTrimmed}'`);
+                        }
+                    }
+                }
+                braceDepth = 0; // Done processing
+            }
+            
+            let inString = false;
+            let inComment = false;
+            let commentType = null;
+            
+            for (let j = 0; j < line.length; j++) {
+                if (line[j] === '"' && (j === 0 || line[j-1] !== '\\')) {
+                    inString = !inString;
+                }
+                if (!inString) {
+                    if (line[j] === '/' && j + 1 < line.length && line[j+1] === '/') {
+                        break;
+                    }
+                    if (line[j] === '/' && j + 1 < line.length && line[j+1] === '*') {
+                        inComment = true;
+                        commentType = 'block';
+                        j++;
+                        continue;
+                    }
+                    if (inComment && commentType === 'block' && line[j] === '*' && j + 1 < line.length && line[j+1] === '/') {
+                        inComment = false;
+                        commentType = null;
+                        j++;
+                        continue;
+                    }
+                    if (!inComment) {
+                        if (line[j] === '{') braceDepth++;
+                        else if (line[j] === '}') braceDepth--;
+                    }
+                }
+            }
+            
+            // Skip multi-line processing if this is a single-line struct (already processed above)
+            if (!isSingleLineStruct) {
+                for (let j = startLine + 1; j < lines.length && braceDepth > 0; j++) {
+                    const structLine = lines[j];
+                let lineBraceDepth = 0;
+                inString = false;
+                inComment = false;
+                commentType = null;
+                
+                // Check if this line contains typedef alias after closing brace
+                if (braceDepth === 1 && structLine.includes('}')) {
+                    const aliasMatch = structLine.match(/}\s+([A-Za-z_][A-Za-z0-9_]*)\s*;/);
+                    if (aliasMatch) {
+                        const aliasName = aliasMatch[1];
+                        if (!results.has(aliasName)) {
+                            results.set(aliasName, {
+                                name: aliasName,
+                                uri: vscode.Uri.file(filePath),
+                                line: i
+                            });
+                            debugLog(`Found typedef alias: ${aliasName} at ${path.basename(filePath)}:${i + 1}`);
+                        }
+                    }
+                }
+                
+                for (let k = 0; k < structLine.length; k++) {
+                    if (structLine[k] === '"' && (k === 0 || structLine[k-1] !== '\\')) {
+                        inString = !inString;
+                    }
+                    if (!inString) {
+                        if (structLine[k] === '/' && k + 1 < structLine.length && structLine[k+1] === '/') {
+                            break;
+                        }
+                        if (structLine[k] === '/' && k + 1 < structLine.length && structLine[k+1] === '*') {
+                            inComment = true;
+                            commentType = 'block';
+                            k++;
+                            continue;
+                        }
+                        if (inComment && commentType === 'block' && structLine[k] === '*' && k + 1 < structLine.length && structLine[k+1] === '/') {
+                            inComment = false;
+                            commentType = null;
+                            k++;
+                            continue;
+                        }
+                        if (!inComment) {
+                            if (structLine[k] === '{') lineBraceDepth++;
+                            else if (structLine[k] === '}') lineBraceDepth--;
+                        }
+                    }
+                }
+                
+                braceDepth += lineBraceDepth;
+                
+                // Extract struct members (variables declared inside the struct)
+                if (braceDepth > 0) {
+                    const trimmed = structLine.trim();
+                    // Skip comments and empty lines
+                    if (trimmed.startsWith('//') || trimmed.startsWith('/*') || trimmed.length === 0) {
+                        // Continue to next iteration
+                    } else {
+                        // Match member declarations: type name; or type name : semantic;
+                        // Support various types: float, float2, float3, float4, float4x4, int, uint, uint3, bool, Texture2D, Sampler, etc.
+                        // Pattern: (type) (name) [;:]
+                        // Types can be: float[1-4][x1-4]?, real[1-4][x1-4]?, int[1-4]?, uint[1-4]?, bool, half, double, matrix[1-4]x[1-4]?, Texture*, Sampler*, or PascalCase type
+                        // Also support modifiers like "noperspective" before the type
+                        let memberMatch = trimmed.match(/^\s*(?:noperspective\s+)?(?:(?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix(?:[1-4]x[1-4])?|Texture\w*|Sampler(?:State|ComparisonState|\w*)?|[A-Z][A-Za-z0-9_<>,\s]*))\s+([A-Za-z_][A-Za-z0-9_]*)\s*[;:]/);
+                        if (!memberMatch) {
+                            // Try a more permissive pattern for edge cases (e.g., uint3, float4x4, noperspective)
+                            memberMatch = trimmed.match(/^\s*(?:noperspective\s+)?([A-Za-z_][A-Za-z0-9_<>,\s]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*[;:]/);
+                        }
+                        if (memberMatch && !trimmed.includes('{') && !trimmed.startsWith('//') && !trimmed.startsWith('/*')) {
+                            const memberName = memberMatch[memberMatch.length - 1]; // Last capture group is the member name
+                            // Skip if it looks like a function call, enum, struct, or other non-member declaration
+                            if (!trimmed.includes('(') && !trimmed.includes(')') && !trimmed.includes('enum') && !trimmed.includes('struct') && !trimmed.includes('class')) {
+                                currentMembers.add(memberName);
+                                debugLog(`Found struct member: ${structName}::${memberName} at ${path.basename(filePath)}:${j + 1}`);
+                            }
+                        }
+                    }
+                }
+                
+                // Check if braceDepth becomes 0 and there's a typedef alias after the closing brace
+                if (braceDepth === 0 && line.includes('typedef')) {
+                    const aliasMatch = structLine.match(/}\s+([A-Za-z_][A-Za-z0-9_]*)\s*;/);
+                    if (aliasMatch) {
+                        const aliasName = aliasMatch[1];
+                        if (!results.has(aliasName)) {
+                            results.set(aliasName, {
+                                name: aliasName,
+                                uri: vscode.Uri.file(filePath),
+                                line: i
+                            });
+                            // Copy members from struct to typedef alias
+                            structMembersMap.set(aliasName, new Set(currentMembers));
+                            debugLog(`Found typedef alias (after brace): ${aliasName} at ${path.basename(filePath)}:${i + 1}`);
+                        }
+                    }
+                }
+                }
+            } // End of !isSingleLineStruct check
+        }
+    }
+    
+    debugLog(`[extractStructDeclarations] Finished parsing ${path.basename(filePath)}: found ${results.size} structs: ${Array.from(results.keys()).join(', ')}`);
+    return { structs: results, members: structMembersMap };
+}
+
+function extractFunctionDeclarations(text, filePath) {
+    const results = new Map();
+    const lines = text.split(/\r?\n/);
+    let braceDepth = 0;
+    let inStructOrClass = false;
+    let structClassDepth = 0;
+    
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const trimmed = line.trim();
+        
+        // Skip comments
+        if (trimmed.startsWith('//') || trimmed.startsWith('/*')) {
+            continue;
+        }
+        
+        // Track brace depth
+        const openBraces = (line.match(/{/g) || []).length;
+        const closeBraces = (line.match(/}/g) || []).length;
+        braceDepth += openBraces - closeBraces;
+        
+        // Track struct/class scope
+        const structClassMatch = line.match(/\b(?:struct|class)\s+([A-Za-z_][A-Za-z0-9_]*)\s*[:\{]?/);
+        if (structClassMatch) {
+            inStructOrClass = true;
+            structClassDepth = braceDepth;
+        }
+        if (inStructOrClass && braceDepth < structClassDepth) {
+            inStructOrClass = false;
+        }
+        
+        // Skip if inside struct/class (those are methods, not functions)
+        if (inStructOrClass) {
+            continue;
+        }
+        
+        // Match function declarations: ReturnType FunctionName(parameters)
+        // Pattern: (return type) (function name) (
+        const funcMatch = line.match(/^\s*(?:static\s+)?(?:inline\s+)?(?:void|real(?:[1-4](?:x[1-4])?)?|float(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix(?:[1-4]x[1-4])?|[A-Z][A-Za-z0-9_<>,\s]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/);
+        if (funcMatch) {
+            const funcName = funcMatch[1];
+            // Skip keywords that might match
+            if (funcName === 'ShaderResourceGroup' || funcName === 'partial' || funcName === 'static' || funcName === 'const' || funcName === 'if' || funcName === 'for' || funcName === 'while') {
+                continue;
+            }
+            
+            // Find column position
+            const funcStart = line.indexOf(funcName);
+            if (funcStart >= 0) {
+                if (!results.has(funcName)) {
+                    results.set(funcName, {
+                        uri: vscode.Uri.file(filePath),
+                        line: i,
+                        column: funcStart
+                    });
+                    debugLog(`Indexed function: ${funcName} -> ${path.basename(filePath)}:${i + 1}`);
+                }
+            }
+        }
+    }
+    
+    return results;
+}
+
+function extractOptionDeclarations(text, filePath) {
+    const results = new Map();
+    const lines = text.split(/\r?\n/);
+    let inMultiLineComment = false;
+    
+    for (let i = 0; i < lines.length; i++) {
+        let line = lines[i];
+        
+        // Handle multi-line comments
+        if (inMultiLineComment) {
+            const commentEnd = line.indexOf('*/');
+            if (commentEnd !== -1) {
+                inMultiLineComment = false;
+                line = line.substring(commentEnd + 2);
+            } else {
+                continue; // Still inside multi-line comment
+            }
+        }
+        
+        // Check for start of multi-line comment
+        const multiLineStart = line.indexOf('/*');
+        if (multiLineStart !== -1) {
+            const commentEnd = line.indexOf('*/', multiLineStart + 2);
+            if (commentEnd !== -1) {
+                line = line.substring(0, multiLineStart) + line.substring(commentEnd + 2);
+            } else {
+                inMultiLineComment = true;
+                line = line.substring(0, multiLineStart);
+            }
+        }
+        
+        // Remove single-line comments
+        const singleLineComment = line.indexOf('//');
+        if (singleLineComment !== -1) {
+            line = line.substring(0, singleLineComment);
+        }
+        
+        const processedLine = line.trim();
+        
+        // Skip empty lines
+        if (!processedLine) {
+            continue;
+        }
+        
+        // Match: option [static] bool/int/uint name = value;
+        const optionMatch = processedLine.match(/^\s*option\s+(?:static\s+)?(bool|int|uint)\s+([A-Za-z_][A-Za-z0-9_]*)\s*[=;]/);
+        if (optionMatch) {
+            const isStatic = processedLine.includes('static');
+            const optionName = optionMatch[2];
+            if (!results.has(optionName)) {
+                results.set(optionName, {
+                    name: optionName,
+                    isStatic: isStatic,
+                    uri: vscode.Uri.file(filePath),
+                    line: i
+                });
+            }
+        }
+    }
+    
+    return results;
+}
+
 function extractAtomMethods(text, filePath) {
     const results = [];
     const properties = new Map();
@@ -351,6 +931,10 @@ function extractAtomMethods(text, filePath) {
                 const propertyMatch = line.match(/^\s*(?:precise\s+)?(?:real(?:[1-4](?:x[1-4])?)?|float(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|Texture\w*|Sampler\w*|[A-Z][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\]]+\])?\s*[;=]/);
                 if (propertyMatch) {
                     const propertyName = propertyMatch[1];
+                    // Exclude properties that are only in specific Surface variants, not in all Surface types
+                    if (atomType === 'Surface' && (propertyName === 'alpha' || propertyName === 'transmission')) {
+                        continue;
+                    }
                     if (!properties.has(atomType)) {
                         properties.set(atomType, new Set());
                     }
@@ -472,6 +1056,7 @@ function extractAtomMethods(text, filePath) {
     return { methods: results, properties: properties };
 }
 
+
 function indexHeaders(rootPath) {
     indexedSymbols.clear();
     headersPathIndex.clear();
@@ -480,6 +1065,31 @@ function indexHeaders(rootPath) {
     atomMethodIndex.clear();
     atomTypeMembers.clear();
     srgSemanticIndex.clear();
+    srgMembers.clear();
+    srgMemberIndex.clear();
+    srgIndex.clear();
+    structIndex.clear();
+    structMembers.clear();
+    optionIndex.clear();
+    
+    // Built-in SRG semantics (defined by O3DE compiler)
+    const builtinSrgSemantics = [
+        'SRG_PerDraw',
+        'SRG_PerMaterial',
+        'SRG_PerPass',
+        'SRG_PerPass_WithFallback',
+        'SRG_PerScene',
+        'SRG_PerView',
+        'SRG_PerSubMesh',
+        'SRG_RayTracingGlobal',
+        'SRG_RayTracingLocal'
+    ];
+    for (const semantic of builtinSrgSemantics) {
+        srgSemanticIndex.set(semantic, {
+            uri: vscode.Uri.parse('azsl-builtin://srg-semantics'),
+            line: 0
+        });
+    }
     
     atomTypeMembers.set('Surface', new Set([
         'CalculateRoughnessA', 'SetAlbedoAndSpecularF0', 'GetDefaultNormal', 'GetSpecularF0'
@@ -493,8 +1103,13 @@ function indexHeaders(rootPath) {
     }
     const files = walkDirCollect(rootPath);
     let totalMethods = 0;
+    let srgiCount = 0;
     for (const f of files) {
         try {
+            if (f.toLowerCase().endsWith('.srgi')) {
+                srgiCount++;
+                debugLog(`Processing .srgi file: ${path.relative(rootPath, f)}`);
+            }
             const buf = fs.readFileSync(f, 'utf8');
             const syms = extractSymbolsFromText(buf);
             syms.forEach(s => indexedSymbols.add(s));
@@ -536,6 +1151,74 @@ function indexHeaders(rootPath) {
                     uri: srg.uri,
                     line: srg.line
                 });
+                debugLog(`Indexed SRG semantic: ${srg.name} -> ${path.basename(f)}:${srg.line + 1}`);
+            }
+            const srgDecls = extractSrgDeclarations(buf, f);
+            for (const [srgName, srgInfo] of srgDecls.srgInfo.entries()) {
+                if (!srgIndex.has(srgName)) {
+                    srgIndex.set(srgName, {
+                        uri: srgInfo.uri,
+                        line: srgInfo.line
+                    });
+                    debugLog(`Indexed SRG: ${srgName} -> ${path.basename(f)}:${srgInfo.line + 1}`);
+                }
+                if (!srgMembers.has(srgName)) {
+                    srgMembers.set(srgName, new Set());
+                }
+                const existingMembers = srgMembers.get(srgName);
+                for (const member of srgInfo.members) {
+                    existingMembers.add(member);
+                }
+            }
+            for (const [memberKey, memberInfo] of srgDecls.memberLocations.entries()) {
+                if (!srgMemberIndex.has(memberKey)) {
+                    srgMemberIndex.set(memberKey, memberInfo);
+                    debugLog(`Indexed SRG member: ${memberKey} -> ${path.basename(f)}:${memberInfo.line + 1}`);
+                }
+            }
+            const structDecls = extractStructDeclarations(buf, f);
+            for (const [structName, structInfo] of structDecls.structs.entries()) {
+                if (!structIndex.has(structName)) {
+                    structIndex.set(structName, {
+                        uri: structInfo.uri,
+                        line: structInfo.line
+                    });
+                    debugLog(`Indexed struct: ${structName} -> ${path.basename(f)}:${structInfo.line + 1}`);
+                }
+                // Store struct members
+                if (!structMembers.has(structName)) {
+                    structMembers.set(structName, new Set());
+                }
+                const existingMembers = structMembers.get(structName);
+                const members = structDecls.members.get(structName);
+                if (members) {
+                    for (const member of members) {
+                        existingMembers.add(member);
+                    }
+                    debugLog(`Indexed ${members.size} members for struct: ${structName}`);
+                }
+            }
+            const funcDecls = extractFunctionDeclarations(buf, f);
+            for (const [funcName, funcInfo] of funcDecls.entries()) {
+                if (!functionIndex.has(funcName)) {
+                    functionIndex.set(funcName, {
+                        uri: funcInfo.uri,
+                        line: funcInfo.line,
+                        column: funcInfo.column
+                    });
+                    debugLog(`Indexed function: ${funcName} -> ${path.basename(f)}:${funcInfo.line + 1}`);
+                }
+            }
+            const optionDecls = extractOptionDeclarations(buf, f);
+            for (const [optionName, optionInfo] of optionDecls.entries()) {
+                if (!optionIndex.has(optionName)) {
+                    optionIndex.set(optionName, {
+                        uri: optionInfo.uri,
+                        line: optionInfo.line,
+                        isStatic: optionInfo.isStatic
+                    });
+                    debugLog(`Indexed option: ${optionName} (static: ${optionInfo.isStatic}) -> ${path.basename(f)}:${optionInfo.line + 1}`);
+                }
             }
         } catch (e) {
             debugLog(`Error indexing ${path.basename(f)}: ${e.message}`);
@@ -548,7 +1231,380 @@ function indexHeaders(rootPath) {
         headersBasenameIndex.set(base, list);
     }
     indexShaderQualityMacros();
-    debugLog(`Indexing complete: ${files.length} files, ${atomMethodIndex.size / 2} methods, ${macroIndex.size} macros`);
+    debugLog(`Indexing complete: ${files.length} files (${srgiCount} .srgi files), ${atomMethodIndex.size / 2} methods, ${macroIndex.size} macros`);
+    debugLog(`SRG indexing: ${srgIndex.size} SRGs, ${srgMemberIndex.size} members`);
+    for (const [srgName, srgInfo] of srgIndex.entries()) {
+        const members = srgMembers.get(srgName);
+        debugLog(`  ${srgName}: ${members ? members.size : 0} members`);
+    }
+}
+
+// Helper function to get function return type and first parameter type at a given position
+function getFunctionReturnTypeAtPosition(document, lineNum) {
+    const text = document.getText();
+    const lines = text.split(/\r?\n/);
+    const functionScopes = [];
+    let braceDepth = 0;
+    let currentFunctionStart = -1;
+    let currentFunctionReturnType = null;
+    let currentFunctionFirstParamType = null;
+    
+    // Parse function signatures and track scopes
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const prevBraceDepth = braceDepth;
+        braceDepth += (line.match(/{/g) || []).length;
+        braceDepth -= (line.match(/}/g) || []).length;
+        const currentBraceDepth = braceDepth;
+        
+        // Check for function signature
+        const funcMatch = line.match(/^\s*((?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix(?:[1-4]x[1-4])?|Texture\w*|Sampler\w*|[A-Z][A-Za-z0-9_]*))\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/);
+        if (funcMatch) {
+            currentFunctionStart = i;
+            currentFunctionReturnType = funcMatch[1].trim();
+            
+            // Extract first parameter type
+            const funcParams = line.match(/\b((?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix(?:[1-4]x[1-4])?|Texture\w*|Sampler\w*|[A-Z][A-Za-z0-9_]*))\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:[,:)]|$)/);
+            if (funcParams) {
+                const paramMatch = funcParams[0].match(/\b((?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix(?:[1-4]x[1-4])?|Texture\w*|Sampler\w*|[A-Z][A-Za-z0-9_]*))\s+([A-Za-z_][A-Za-z0-9_]*)/);
+                if (paramMatch) {
+                    currentFunctionFirstParamType = paramMatch[1];
+                }
+            }
+        }
+        
+        if (currentFunctionStart >= 0 && prevBraceDepth === 0 && currentBraceDepth > 0) {
+            // Function body started
+            const existingScope = functionScopes.find(s => s.startLine === currentFunctionStart);
+            if (!existingScope) {
+                functionScopes.push({
+                    startLine: currentFunctionStart,
+                    returnType: currentFunctionReturnType,
+                    firstParamType: currentFunctionFirstParamType,
+                    endLine: null
+                });
+            }
+        }
+        
+        if (currentFunctionStart >= 0 && prevBraceDepth === 1 && currentBraceDepth === 0) {
+            // Function ended
+            const scope = functionScopes.find(s => s.startLine === currentFunctionStart);
+            if (scope) {
+                scope.endLine = i;
+            }
+            currentFunctionStart = -1;
+            currentFunctionReturnType = null;
+            currentFunctionFirstParamType = null;
+        }
+    }
+    
+    // Find the innermost function scope containing the given line
+    for (let j = functionScopes.length - 1; j >= 0; j--) {
+        const scope = functionScopes[j];
+        if (scope.startLine <= lineNum && (!scope.endLine || lineNum <= scope.endLine)) {
+            return scope.returnType;
+        }
+    }
+    
+    return null;
+}
+
+function getFunctionParameterTypeAtPosition(document, lineNum) {
+    const text = document.getText();
+    const lines = text.split(/\r?\n/);
+    const functionScopes = [];
+    let braceDepth = 0;
+    let currentFunctionStart = -1;
+    let currentFunctionReturnType = null;
+    let currentFunctionFirstParamType = null;
+    
+    // Parse function signatures and track scopes
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const prevBraceDepth = braceDepth;
+        braceDepth += (line.match(/{/g) || []).length;
+        braceDepth -= (line.match(/}/g) || []).length;
+        const currentBraceDepth = braceDepth;
+        
+        // Check for function signature
+        const funcMatch = line.match(/^\s*((?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix(?:[1-4]x[1-4])?|Texture\w*|Sampler\w*|[A-Z][A-Za-z0-9_]*))\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/);
+        if (funcMatch) {
+            currentFunctionStart = i;
+            currentFunctionReturnType = funcMatch[1].trim();
+            
+            // Extract first parameter type
+            const funcParams = line.match(/\b((?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix(?:[1-4]x[1-4])?|Texture\w*|Sampler\w*|[A-Z][A-Za-z0-9_]*))\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:[,:)]|$)/);
+            if (funcParams) {
+                const paramMatch = funcParams[0].match(/\b((?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix(?:[1-4]x[1-4])?|Texture\w*|Sampler\w*|[A-Z][A-Za-z0-9_]*))\s+([A-Za-z_][A-Za-z0-9_]*)/);
+                if (paramMatch) {
+                    currentFunctionFirstParamType = paramMatch[1];
+                }
+            }
+        }
+        
+        if (currentFunctionStart >= 0 && prevBraceDepth === 0 && currentBraceDepth > 0) {
+            // Function body started
+            const existingScope = functionScopes.find(s => s.startLine === currentFunctionStart);
+            if (!existingScope) {
+                functionScopes.push({
+                    startLine: currentFunctionStart,
+                    returnType: currentFunctionReturnType,
+                    firstParamType: currentFunctionFirstParamType,
+                    endLine: null
+                });
+            }
+        }
+        
+        if (currentFunctionStart >= 0 && prevBraceDepth === 1 && currentBraceDepth === 0) {
+            // Function ended
+            const scope = functionScopes.find(s => s.startLine === currentFunctionStart);
+            if (scope) {
+                scope.endLine = i;
+            }
+            currentFunctionStart = -1;
+            currentFunctionReturnType = null;
+            currentFunctionFirstParamType = null;
+        }
+    }
+    
+    // Find the innermost function scope containing the given line
+    for (let j = functionScopes.length - 1; j >= 0; j--) {
+        const scope = functionScopes[j];
+        if (scope.startLine <= lineNum && (!scope.endLine || lineNum <= scope.endLine)) {
+            return scope.firstParamType;
+        }
+    }
+    
+    return null;
+}
+
+function getVariableTypeAtPosition(document, varName, lineNum) {
+    const text = document.getText();
+    const lines = text.split(/\r?\n/);
+    const atomTypes = new Set(['Surface', 'LightingData', 'DirectionalLight', 'SimplePointLight', 'PointLight', 'SimpleSpotLight', 'DiskLight', 'ForwardPassOutput', 'VertexShaderOutput', 'VertexShaderInput']);
+    const textureTypes = new Set(['Texture2D', 'Texture3D', 'TextureCube', 'Texture2DArray', 'RWTexture2D', 'RWTexture3D', 'Texture1D', 'Texture2DMS', 'RWTexture1D']);
+    
+    // Track variable declarations with their scope (braceDepth and line number)
+    const variableDeclarations = new Map(); // varName -> Array<{type, line, braceDepth}>
+    const variableTypes = new Map();
+    let braceDepth = 0;
+    
+    // Parse all variable declarations with their scope
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const openBraces = (line.match(/{/g) || []).length;
+        const closeBraces = (line.match(/}/g) || []).length;
+        braceDepth += openBraces - closeBraces;
+        
+        // Match variable declarations: TypeName varName;
+        const varDeclMatch = line.match(/\b((?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix|Texture\w*|Sampler\w*|RWTexture\w*|[A-Z][A-Za-z0-9_]*))\s+([A-Za-z_][A-Za-z0-9_]*)\s*[;=]/);
+        if (varDeclMatch) {
+            const fullType = varDeclMatch[1];
+            const vName = varDeclMatch[2];
+            
+            // Store declaration with scope information
+            if (!variableDeclarations.has(vName)) {
+                variableDeclarations.set(vName, []);
+            }
+            variableDeclarations.get(vName).push({type: fullType, line: i, braceDepth: braceDepth});
+            
+            // Also store in variableTypes for fallback - check all possible type sources
+            if (atomTypes.has(fullType) || textureTypes.has(fullType) || structIndex.has(fullType) || structMembers.has(fullType)) {
+                variableTypes.set(vName, fullType);
+            }
+        }
+    }
+    
+    // Find the most recent declaration that is in scope at lineNum
+    if (variableDeclarations.has(varName)) {
+        const declarations = variableDeclarations.get(varName);
+        // Calculate brace depth at lineNum
+        let targetBraceDepth = 0;
+        for (let i = 0; i <= lineNum && i < lines.length; i++) {
+            const openBraces = (lines[i].match(/{/g) || []).length;
+            const closeBraces = (lines[i].match(/}/g) || []).length;
+            targetBraceDepth += openBraces - closeBraces;
+        }
+        
+        // Find the most recent declaration that is in scope
+        let bestMatch = null;
+        let bestBraceDepth = -1;
+        for (const decl of declarations) {
+            if (decl.line <= lineNum && decl.braceDepth <= targetBraceDepth) {
+                if (decl.braceDepth > bestBraceDepth) {
+                    bestBraceDepth = decl.braceDepth;
+                    bestMatch = decl;
+                } else if (decl.braceDepth === bestBraceDepth && decl.line > (bestMatch ? bestMatch.line : -1)) {
+                    bestMatch = decl;
+                }
+            }
+        }
+        if (bestMatch) {
+            return bestMatch.type;
+        }
+    }
+    
+    // Fallback to variableTypes
+    if (variableTypes.has(varName)) {
+        return variableTypes.get(varName);
+    }
+    
+    return null;
+}
+
+// Helper function to check if a type is a vector type
+function isVectorType(type) {
+    if (!type) return false;
+    return /^(float|int|uint|bool|real|half)[2-4]$/.test(type);
+}
+
+// Helper function to get swizzle properties for a vector type
+function getSwizzleProperties(type) {
+    const props = new Set();
+    
+    const dimMatch = type.match(/(\d)$/);
+    if (!dimMatch) return [];
+    const dim = parseInt(dimMatch[1]);
+    
+    const components = ['x', 'y', 'z', 'w'];
+    const colorComponents = ['r', 'g', 'b', 'a'];
+    
+    for (let i = 0; i < dim; i++) {
+        props.add(components[i]);
+        props.add(colorComponents[i]);
+    }
+    
+    for (let i = 0; i < dim; i++) {
+        for (let j = 0; j < dim; j++) {
+            if (i !== j) {
+                props.add(components[i] + components[j]);
+                props.add(colorComponents[i] + colorComponents[j]);
+            }
+        }
+    }
+    
+    if (dim >= 3) {
+        for (let i = 0; i < dim; i++) {
+            for (let j = 0; j < dim; j++) {
+                for (let k = 0; k < dim; k++) {
+                    if (i !== j && j !== k && i !== k) {
+                        props.add(components[i] + components[j] + components[k]);
+                        props.add(colorComponents[i] + colorComponents[j] + colorComponents[k]);
+                    }
+                }
+            }
+        }
+    }
+    
+    if (dim === 4) {
+        for (let i = 0; i < dim; i++) {
+            for (let j = 0; j < dim; j++) {
+                for (let k = 0; k < dim; k++) {
+                    for (let l = 0; l < dim; l++) {
+                        if (i !== j && j !== k && k !== l && i !== k && i !== l && j !== l) {
+                            props.add(components[i] + components[j] + components[k] + components[l]);
+                            props.add(colorComponents[i] + colorComponents[j] + colorComponents[k] + colorComponents[l]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    return Array.from(props).sort();
+}
+
+// Helper function to extract function call arguments, handling nested parentheses
+function extractFunctionCallArgs(text, funcName) {
+    const funcPattern = new RegExp(`\\b${funcName}\\s*\\(`, 'g');
+    let match;
+    let lastMatch = null;
+    
+    while ((match = funcPattern.exec(text)) !== null) {
+        lastMatch = match;
+    }
+    
+    if (!lastMatch) return null;
+    
+    const startPos = lastMatch.index + lastMatch[0].length;
+    let depth = 1;
+    let pos = startPos;
+    let argStart = startPos;
+    const args = [];
+    
+    while (pos < text.length && depth > 0) {
+        if (text[pos] === '(') depth++;
+        else if (text[pos] === ')') depth--;
+        else if (text[pos] === ',' && depth === 1) {
+            args.push(text.substring(argStart, pos).trim());
+            argStart = pos + 1;
+        }
+        pos++;
+    }
+    
+    if (depth === 0) {
+        args.push(text.substring(argStart, pos - 1).trim());
+        return args;
+    }
+    
+    return null;
+}
+
+// Helper function to determine expression type (e.g., mul() result)
+function getExpressionType(document, expression, lineNum) {
+    if (!expression) return null;
+    
+    const trimmedExpr = expression.trim();
+    
+    // Check for mul(matrix, vector) pattern
+    const mulMatch = trimmedExpr.match(/\bmul\s*\(/);
+    if (mulMatch) {
+        debugLog(`[getExpressionType] Found mul() in expression: '${trimmedExpr}'`);
+        const args = extractFunctionCallArgs(trimmedExpr, 'mul');
+        debugLog(`[getExpressionType] Extracted args: ${args ? JSON.stringify(args) : 'null'}`);
+        if (args && args.length >= 2) {
+            const secondArg = args[1].trim();
+            debugLog(`[getExpressionType] Second arg: '${secondArg}'`);
+            // Check if second argument is a vector type constructor (e.g., float4(...))
+            const vectorMatch = secondArg.match(/(float|int|uint|bool|real|half)([2-4])\s*\(/);
+            if (vectorMatch) {
+                const resultType = vectorMatch[1] + vectorMatch[2];
+                debugLog(`[getExpressionType] mul() with vector constructor: ${resultType}`);
+                return resultType;
+            }
+            // Check if it's a variable of vector type
+            const varMatch = secondArg.match(/^([A-Za-z_][A-Za-z0-9_]*)/);
+            if (varMatch) {
+                const varType = getVariableTypeAtPosition(document, varMatch[1], lineNum);
+                if (varType && isVectorType(varType)) {
+                    debugLog(`[getExpressionType] mul() with vector variable: ${varType}`);
+                    return varType;
+                }
+            }
+            // Check for member access in second argument (e.g., IN.m_position)
+            const memberMatch = secondArg.match(/([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)/);
+            if (memberMatch) {
+                const varName = memberMatch[1];
+                const memberName = memberMatch[2];
+                const varType = getVariableTypeAtPosition(document, varName, lineNum);
+                if (varType && structMembers.has(varType)) {
+                    // For now, assume member access returns a vector type if it's a known member
+                    // This is a simplified check - in real implementation, we'd parse struct definitions
+                    debugLog(`[getExpressionType] mul() with member access: ${varName}.${memberName}, varType=${varType}`);
+                }
+            }
+        }
+    }
+    
+    // Check for vector type constructors directly (e.g., float4(...))
+    const vectorConstructorMatch = trimmedExpr.match(/(float|int|uint|bool|real|half)([2-4])\s*\(/);
+    if (vectorConstructorMatch) {
+        const resultType = vectorConstructorMatch[1] + vectorConstructorMatch[2];
+        debugLog(`[getExpressionType] Vector constructor: ${resultType}`);
+        return resultType;
+    }
+    
+    return null;
 }
 
 function provideCompletionItems(document, position, token, context) {
@@ -563,6 +1619,36 @@ function provideCompletionItems(document, position, token, context) {
     const lineText = document.lineAt(position.line).text;
     const beforeCursor = lineText.substring(0, position.character);
     
+    // First, check if this is a function call expression (e.g., mul(...).xyz)
+    // This should be checked before looking for variable names
+    const dotIndex = beforeCursor.lastIndexOf('.');
+    if (dotIndex >= 0) {
+        const expressionBeforeDot = beforeCursor.substring(0, dotIndex).trim();
+        debugLog(`[provideCompletionItems] Checking expression before dot: '${expressionBeforeDot}'`);
+        // Check if expression ends with ) indicating a function call
+        if (expressionBeforeDot.endsWith(')')) {
+            const exprType = getExpressionType(document, expressionBeforeDot, position.line);
+            debugLog(`[provideCompletionItems] Expression type result: ${exprType}`);
+            if (exprType && isVectorType(exprType)) {
+                debugLog(`[provideCompletionItems] Found expression type: ${exprType} for '${expressionBeforeDot}'`);
+                // Provide swizzle completion for vector types
+                const swizzleProps = getSwizzleProperties(exprType);
+                debugLog(`[provideCompletionItems] Swizzle properties for ${exprType}: ${swizzleProps.length} items`);
+                for (const prop of swizzleProps) {
+                    if (!current || prop.toLowerCase().startsWith(current.toLowerCase())) {
+                        const item = new vscode.CompletionItem(prop, vscode.CompletionItemKind.Property);
+                        item.sortText = '00_' + prop;
+                        items.push(item);
+                    }
+                }
+                if (items.length > 0) {
+                    debugLog(`[provideCompletionItems] Returning ${items.length} swizzle completion items`);
+                    return items;
+                }
+            }
+        }
+    }
+    
     let memberAccessMatch = beforeCursor.match(/([A-Za-z_][A-Za-z0-9_]*)\s*[\.:]\s*$/);
     if (!memberAccessMatch) {
         memberAccessMatch = beforeCursor.match(/([A-Za-z_][A-Za-z0-9_]*)\s*[\.:]\s*$/);
@@ -575,40 +1661,42 @@ function provideCompletionItems(document, position, token, context) {
     if (memberAccessMatch) {
         const varName = memberAccessMatch[1];
         
-        // Get variable type from document
-        const text = document.getText();
-        const lines = text.split(/\r?\n/);
-        const atomTypes = new Set(['Surface', 'LightingData']);
-        const textureTypes = new Set(['Texture2D', 'Texture3D', 'TextureCube', 'Texture2DArray', 'RWTexture2D', 'RWTexture3D', 'Texture1D', 'Texture2DMS', 'RWTexture1D']);
-        const variableTypes = new Map();
+        let varType = null;
         
-        for (let i = 0; i < lines.length; i++) {
-            const line = lines[i];
-            const pascalTypeMatch = line.match(/\b([A-Z][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*[;=]/);
-            if (pascalTypeMatch) {
-                const typeName = pascalTypeMatch[1];
-                const vName = pascalTypeMatch[2];
-                if (atomTypes.has(typeName)) {
-                    variableTypes.set(vName, typeName);
-                } else if (textureTypes.has(typeName)) {
-                    variableTypes.set(vName, typeName);
-                }
-            }
-            const textureTypeMatch = line.match(/\b(Texture\w*|RWTexture\w*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*[;=]/);
-            if (textureTypeMatch) {
-                const typeName = textureTypeMatch[1];
-                const vName = textureTypeMatch[2];
-                if (textureTypes.has(typeName)) {
-                    variableTypes.set(vName, typeName);
-                }
+        // Special handling for OUT variable: use function return type from current context
+        if (varName === 'OUT' || varName === 'out') {
+            const funcReturnType = getFunctionReturnTypeAtPosition(document, position.line);
+            if (funcReturnType) {
+                varType = funcReturnType;
             }
         }
         
-        let varType = null;
-        if (atomTypes.has(varName)) {
+        // Special handling for IN variable: use function first parameter type from current context
+        if (!varType && (varName === 'IN' || varName === 'in')) {
+            const funcParamType = getFunctionParameterTypeAtPosition(document, position.line);
+            if (funcParamType) {
+                varType = funcParamType;
+            }
+        }
+        
+        // Get variable type considering scope
+        if (!varType) {
+            varType = getVariableTypeAtPosition(document, varName, position.line);
+        }
+        
+        // Fallback to atomTypes
+        const atomTypes = new Set(['Surface', 'LightingData', 'DirectionalLight', 'SimplePointLight', 'PointLight', 'SimpleSpotLight', 'DiskLight']);
+        if (!varType && atomTypes.has(varName)) {
             varType = varName;
-        } else {
-            varType = variableTypes.get(varName);
+        }
+        
+        debugLog(`[provideCompletionItems] Variable '${varName}' has type: ${varType}`);
+        if (varType) {
+            debugLog(`[provideCompletionItems] structMembers.has('${varType}'): ${structMembers.has(varType)}`);
+            if (structMembers.has(varType)) {
+                const members = structMembers.get(varType);
+                debugLog(`[provideCompletionItems] Found ${members.size} members for type '${varType}': ${Array.from(members).join(', ')}`);
+            }
         }
         
         if (varType && atomTypeMembers.has(varType)) {
@@ -624,6 +1712,39 @@ function provideCompletionItems(document, position, token, context) {
                 }
             }
             
+            return items;
+        } else if (varType && atomTypeMembers.has(varType)) {
+            // Provide completion for atom type members (e.g., ForwardPassOutput)
+            const members = atomTypeMembers.get(varType);
+            for (const member of members) {
+                if (!current || member.toLowerCase().startsWith(current.toLowerCase())) {
+                    const item = new vscode.CompletionItem(member, vscode.CompletionItemKind.Property);
+                    item.sortText = '00_' + member;
+                    items.push(item);
+                }
+            }
+            return items;
+        } else if (varType && structMembers.has(varType)) {
+            // Provide completion for struct members (works for both indexed and local structs)
+            const members = structMembers.get(varType);
+            for (const member of members) {
+                if (!current || member.toLowerCase().startsWith(current.toLowerCase())) {
+                    const item = new vscode.CompletionItem(member, vscode.CompletionItemKind.Property);
+                    item.sortText = '00_' + member;
+                    items.push(item);
+                }
+            }
+            return items;
+        } else if (varType && isVectorType(varType)) {
+            // Provide swizzle completion for vector types (float2, float3, float4, etc.)
+            const swizzleProps = getSwizzleProperties(varType);
+            for (const prop of swizzleProps) {
+                if (!current || prop.toLowerCase().startsWith(current.toLowerCase())) {
+                    const item = new vscode.CompletionItem(prop, vscode.CompletionItemKind.Property);
+                    item.sortText = '00_' + prop;
+                    items.push(item);
+                }
+            }
             return items;
         } 
         else if (varType && textureTypes.has(varType)) {
@@ -670,25 +1791,75 @@ function provideCompletionItems(document, position, token, context) {
 
 function resolveIncludeTarget(includeText) {
     const root = readConfigHeadersPath();
-    if (!root) return undefined;
-    const normalized = includeText.replace(/\\/g, '/');
+    if (!root) {
+        debugLog(`resolveIncludeTarget: no root path configured`);
+        return undefined;
+    }
+    let normalized = includeText.replace(/\\/g, '/');
+    debugLog(`resolveIncludeTarget: trying to resolve "${normalized}" (root: ${root})`);
+    
     if (normalized.startsWith('Atom/')) {
-        const candidate = path.join(root, normalized);
-        if (fs.existsSync(candidate)) return vscode.Uri.file(candidate);
+        const withoutAtom = normalized.substring(5);
+        const candidate = path.join(root, withoutAtom);
+        debugLog(`resolveIncludeTarget: checking Atom/ path (without prefix): ${candidate}`);
+        if (fs.existsSync(candidate)) {
+            debugLog(`resolveIncludeTarget: found via Atom/ prefix: ${candidate}`);
+            return vscode.Uri.file(candidate);
+        }
+        debugLog(`resolveIncludeTarget: file does not exist: ${candidate}`);
+        
+        if (headersPathIndex.has(withoutAtom)) {
+            const found = headersPathIndex.get(withoutAtom);
+            debugLog(`resolveIncludeTarget: found in headersPathIndex (without Atom/): ${found}`);
+            return vscode.Uri.file(found);
+        }
+        
+        for (const [rel, abs] of headersPathIndex.entries()) {
+            if (rel.endsWith('/' + withoutAtom) || rel === withoutAtom) {
+                debugLog(`resolveIncludeTarget: found via suffix match (without Atom/): ${abs} (rel: ${rel})`);
+                return vscode.Uri.file(abs);
+            }
+        }
     }
+    
     if (headersPathIndex.has(normalized)) {
-        return vscode.Uri.file(headersPathIndex.get(normalized));
+        const found = headersPathIndex.get(normalized);
+        debugLog(`resolveIncludeTarget: found in headersPathIndex: ${found}`);
+        return vscode.Uri.file(found);
     }
+    
     for (const [rel, abs] of headersPathIndex.entries()) {
         if (rel.endsWith('/' + normalized) || rel === normalized) {
+            debugLog(`resolveIncludeTarget: found via suffix match: ${abs} (rel: ${rel})`);
             return vscode.Uri.file(abs);
         }
     }
+    
     const base = path.basename(normalized);
     const byBase = headersBasenameIndex.get(base);
     if (byBase && byBase.length === 1) {
+        debugLog(`resolveIncludeTarget: found via basename: ${byBase[0]}`);
         return vscode.Uri.file(byBase[0]);
     }
+    
+    if (byBase && byBase.length > 1) {
+        for (const candidate of byBase) {
+            const candidateRel = path.relative(root, candidate).replace(/\\/g, '/');
+            if (candidateRel.endsWith(normalized) || candidateRel === normalized) {
+                debugLog(`resolveIncludeTarget: found via basename with path match: ${candidate}`);
+                return vscode.Uri.file(candidate);
+            }
+            if (normalized.startsWith('Atom/')) {
+                const withoutAtom = normalized.substring(5);
+                if (candidateRel.endsWith(withoutAtom) || candidateRel === withoutAtom) {
+                    debugLog(`resolveIncludeTarget: found via basename with path match (without Atom/): ${candidate}`);
+                    return vscode.Uri.file(candidate);
+                }
+            }
+        }
+    }
+    
+    debugLog(`resolveIncludeTarget: could not resolve "${normalized}"`);
     return undefined;
 }
 
@@ -717,13 +1888,36 @@ function registerIncludeLinkProviders(context) {
     const defProvider = vscode.languages.registerDefinitionProvider({ language: 'azsl' }, {
         provideDefinition(document, position) {
             const line = document.lineAt(position.line).text;
-            const before = line.slice(0, position.character);
-            const after = line.slice(position.character);
-            const matchLine = line.match(/#\s*include\s*[<"]([^>"]+)[>"]/);
-            if (!matchLine) return;
+            const includeRegex = /#\s*include\s*[<"]([^>"]+)[>"]/;
+            const matchLine = line.match(includeRegex);
+            if (!matchLine) {
+                return;
+            }
+            
             const includePath = matchLine[1];
+            const matchIndex = matchLine.index || 0;
+            const fullMatch = matchLine[0];
+            
+            const openChar = fullMatch.includes('<') ? '<' : '"';
+            const closeChar = fullMatch.includes('>') ? '>' : '"';
+            const quoteStart = fullMatch.indexOf(openChar);
+            const quoteEnd = fullMatch.lastIndexOf(closeChar);
+            
+            const pathStart = matchIndex + quoteStart + 1;
+            const pathEnd = matchIndex + quoteEnd;
+            
+            debugLog(`defProvider: line="${line.trim()}", matchIndex=${matchIndex}, pathStart=${pathStart}, pathEnd=${pathEnd}, cursor=${position.character}, includePath="${includePath}"`);
+            
+            if (position.character < pathStart || position.character > pathEnd) {
+                return;
+            }
+            
             const target = resolveIncludeTarget(includePath);
-            if (!target) return;
+            if (!target) {
+                debugLog(`defProvider: Could not resolve include: ${includePath}`);
+                return;
+            }
+            debugLog(`defProvider: Resolved include: ${includePath} -> ${target.fsPath}`);
             return new vscode.Location(target, new vscode.Position(0, 0));
         }
     });
@@ -858,6 +2052,141 @@ function indexDocumentMacros(document) {
     }
 }
 
+function provideCodeActions(document, range, context, token) {
+    const actions = [];
+    
+    debugLog(`[provideCodeActions] Called with ${context.diagnostics.length} diagnostics, range: ${range.start.line}:${range.start.character}-${range.end.line}:${range.end.character}`);
+    
+    for (const diagnostic of context.diagnostics) {
+        debugLog(`[provideCodeActions] Checking diagnostic: "${diagnostic.message}" at ${diagnostic.range.start.line}:${diagnostic.range.start.character}`);
+        
+        // Check if range intersects with diagnostic range
+        const rangeIntersects = range.intersection(diagnostic.range) !== undefined;
+        debugLog(`[provideCodeActions] Range intersects: ${rangeIntersects}`);
+        
+        // Quick Fix for ShaderVariantFallback error
+        // Check for exact error message: "If you have non-static options, one SRG must be designated as the default ShaderVariantFallback"
+        const isShaderVariantFallbackError = diagnostic.message.includes('ShaderVariantFallback') || 
+            (diagnostic.message.includes('non-static options') && diagnostic.message.includes('SRG must be designated'));
+        
+        debugLog(`[provideCodeActions] Diagnostic message: "${diagnostic.message}"`);
+        debugLog(`[provideCodeActions] isShaderVariantFallbackError=${isShaderVariantFallbackError}`);
+        
+        if (isShaderVariantFallbackError) {
+            debugLog(`[provideCodeActions] Matched ShaderVariantFallback error`);
+            
+            // For global errors on line 0, we should still provide Quick Fix
+            // VS Code may call provideCodeActions even when cursor is not exactly on line 0
+            if (!rangeIntersects && diagnostic.range.start.line !== 0) {
+                debugLog(`[provideCodeActions] Skipping: range doesn't intersect and not line 0`);
+                continue;
+            }
+            
+            const text = document.getText();
+            
+            // Check if SRG already exists (not commented out)
+            // First, remove comments to check for actual SRG declarations
+            const lines = text.split(/\r?\n/);
+            let hasVariantFallback = false;
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i].trim();
+                // Skip commented lines
+                if (line.startsWith('//') || line.startsWith('/*')) {
+                    continue;
+                }
+                // Check for SRG with SRG_PerDraw semantic
+                if (line.match(/ShaderResourceGroup\s+\w+\s*:\s*SRG_PerDraw/)) {
+                    hasVariantFallback = true;
+                    debugLog(`[provideCodeActions] Found existing SRG with SRG_PerDraw at line ${i + 1}`);
+                    break;
+                }
+            }
+            
+            if (hasVariantFallback) {
+                debugLog(`[provideCodeActions] Skipping: SRG with SRG_PerDraw already exists`);
+                continue; // Already has a fallback SRG
+            }
+            
+            debugLog(`[provideCodeActions] No existing SRG with SRG_PerDraw found, creating Quick Fix`);
+            
+            const action = new vscode.CodeAction(
+                'Add ShaderVariantFallback SRG',
+                vscode.CodeActionKind.QuickFix
+            );
+            action.diagnostics = [diagnostic];
+            action.isPreferred = true;
+            action.edit = new vscode.WorkspaceEdit();
+            
+            // Find a good place to insert the SRG (after includes, before other SRGs)
+            const linesForInsert = text.split(/\r?\n/);
+            let insertLine = 0;
+            
+            // Find last include line
+            for (let i = 0; i < linesForInsert.length; i++) {
+                const line = linesForInsert[i].trim();
+                // Skip commented lines when looking for insertion point
+                if (line.startsWith('//') || line.startsWith('/*')) {
+                    continue;
+                }
+                if (line.startsWith('#include')) {
+                    insertLine = i + 1;
+                } else if (line.startsWith('ShaderResourceGroup') || 
+                          line.startsWith('struct') ||
+                          line.startsWith('option')) {
+                    break;
+                }
+            }
+            
+            debugLog(`[provideCodeActions] Inserting SRG at line ${insertLine}`);
+            const srgCode = `\nShaderResourceGroup VariantFallbackSrg : SRG_PerDraw\n{\n}\n`;
+            const position = new vscode.Position(insertLine, 0);
+            action.edit.insert(document.uri, position, srgCode);
+            actions.push(action);
+            debugLog(`[provideCodeActions] Created Quick Fix action: Add ShaderVariantFallback SRG at line ${insertLine}, actions.length=${actions.length}`);
+        }
+        
+        // Quick Fix for undefined semantic error
+        if (diagnostic.message.includes('Declaration for semantic') && diagnostic.message.includes('was not found')) {
+            const semanticMatch = diagnostic.message.match(/semantic\s+([A-Za-z_][A-Za-z0-9_]*)/);
+            if (semanticMatch) {
+                const wrongSemantic = semanticMatch[1];
+                const line = document.lineAt(diagnostic.range.start.line);
+                const lineText = line.text;
+                
+                // Try to find similar semantic (common typos)
+                const commonSemantics = ['SRG_PerDraw', 'SRG_PerMaterial', 'SRG_PerPass', 'SRG_PerPass_WithFallback', 'SRG_PerScene', 'SRG_PerView'];
+                for (const correctSemantic of commonSemantics) {
+                    // Check if it's a typo (missing characters at the end)
+                    if (correctSemantic.startsWith(wrongSemantic) && wrongSemantic.length < correctSemantic.length) {
+                        const action = new vscode.CodeAction(
+                            `Change to ${correctSemantic}`,
+                            vscode.CodeActionKind.QuickFix
+                        );
+                        action.diagnostics = [diagnostic];
+                        action.isPreferred = true;
+                        action.edit = new vscode.WorkspaceEdit();
+                        
+                        // Find the semantic in the line and replace it
+                        const semanticRegex = new RegExp(`:\\s*${wrongSemantic.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+                        const match = lineText.match(semanticRegex);
+                        if (match) {
+                            const startPos = lineText.indexOf(match[0]) + match[0].indexOf(wrongSemantic);
+                            const endPos = startPos + wrongSemantic.length;
+                            const range = new vscode.Range(diagnostic.range.start.line, startPos, diagnostic.range.start.line, endPos);
+                            action.edit.replace(document.uri, range, correctSemantic);
+                            actions.push(action);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    
+    debugLog(`[provideCodeActions] Returning ${actions.length} actions`);
+    return actions;
+}
+
 function activate(context) {
     if (!debugChannel) {
         debugChannel = vscode.window.createOutputChannel('AZSL Debug');
@@ -917,6 +2246,52 @@ function activate(context) {
             const lineText = document.lineAt(position.line).text;
             const memberStart = range.start.character;
             const beforeMember = lineText.substring(0, memberStart);
+            const afterMember = lineText.substring(range.end.character);
+            
+            // Check if this is a function call (not a method call)
+            // Function call should not have . or :: before it, and should have ( after it
+            if (!beforeMember.match(/[A-Za-z_][A-Za-z0-9_]*\s*[\.:]\s*$/) && afterMember.trim().startsWith('(')) {
+                const funcInfo = functionIndex.get(word);
+                if (funcInfo) {
+                    try {
+                        const funcFileContent = fs.readFileSync(funcInfo.uri.fsPath, 'utf8');
+                        const funcLines = funcFileContent.split(/\r?\n/);
+                        if (funcInfo.line < funcLines.length) {
+                            let funcLine = funcLines[funcInfo.line].trim();
+                            // Get the full function signature (might span multiple lines)
+                            let fullSignature = funcLine;
+                            if (funcLine.includes('(') && !funcLine.includes(')')) {
+                                // Function signature spans multiple lines
+                                for (let i = funcInfo.line + 1; i < funcLines.length && i < funcInfo.line + 10; i++) {
+                                    funcLine = funcLines[i].trim();
+                                    fullSignature += ' ' + funcLine;
+                                    if (funcLine.includes(')')) {
+                                        break;
+                                    }
+                                }
+                            }
+                            if (fullSignature.endsWith('{')) {
+                                fullSignature = fullSignature.substring(0, fullSignature.length - 1).trim();
+                            }
+                            
+                            const md = new vscode.MarkdownString();
+                            md.isTrusted = false;
+                            md.appendCodeblock(fullSignature, 'hlsl');
+                            md.appendMarkdown(`\n\nDefined in: \`${path.basename(funcInfo.uri.fsPath)}\``);
+                            return new vscode.Hover(md, range);
+                        }
+                    } catch (e) {
+                        debugLog(`Error reading function file: ${e.message}`);
+                    }
+                    
+                    const md = new vscode.MarkdownString();
+                    md.isTrusted = false;
+                    md.appendCodeblock(`${word}(...)`, 'hlsl');
+                    md.appendMarkdown(`\n**Function**\n\nDefined in: \`${path.basename(funcInfo.uri.fsPath)}\``);
+                    return new vscode.Hover(md, range);
+                }
+            }
+            
             const memberAccessMatch = beforeMember.match(/([A-Za-z_][A-Za-z0-9_]*)\s*[\.:]\s*$/);
             
             if (memberAccessMatch) {
@@ -1007,6 +2382,95 @@ function activate(context) {
                 }
             }
             
+            const srgMemberMatch = lineText.substring(Math.max(0, range.start.character - 50), range.end.character).match(/([A-Za-z_][A-Za-z0-9_]*)\s*::\s*([A-Za-z_][A-Za-z0-9_]*)/);
+            if (srgMemberMatch && srgMemberMatch[2] === word) {
+                const srgName = srgMemberMatch[1];
+                if (srgMembers.has(srgName)) {
+                    const members = srgMembers.get(srgName);
+                    if (members.has(word)) {
+                        const md = new vscode.MarkdownString();
+                        md.isTrusted = false;
+                        md.appendCodeblock(`${srgName}::${word}`, 'hlsl');
+                        md.appendMarkdown(`\n**Member of** \`${srgName}\`\n\nShaderResourceGroup member from O3DE Atom engine.`);
+                        return new vscode.Hover(md, range);
+                    }
+                }
+            }
+            
+            // Check if this is a struct/type - first check current document, then structIndex
+            let structInfo = null;
+            
+            // First, check if the struct is defined in the current document
+            const text = document.getText();
+            const currentDocStructs = extractStructDeclarations(text, document.uri.fsPath);
+            if (currentDocStructs.structs.has(word)) {
+                const localStructInfo = currentDocStructs.structs.get(word);
+                structInfo = {
+                    uri: document.uri,
+                    line: localStructInfo.line
+                };
+            } else if (structIndex.has(word)) {
+                // Fall back to structIndex if not found in current document
+                structInfo = structIndex.get(word);
+            }
+            
+            if (structInfo) {
+                try {
+                    const structFileContent = fs.readFileSync(structInfo.uri.fsPath, 'utf8');
+                    const structLines = structFileContent.split(/\r?\n/);
+                    if (structInfo.line < structLines.length) {
+                        // Get the struct definition (might span multiple lines)
+                        let structLine = structLines[structInfo.line].trim();
+                        let fullDefinition = structLine;
+                        
+                        // If it's a struct/class declaration, try to get the full definition
+                        if (structLine.match(/\b(?:struct|class|typedef)\s+/)) {
+                            // Find the opening brace
+                            let braceCount = 0;
+                            let foundBrace = false;
+                            for (let i = structInfo.line; i < structLines.length && i < structInfo.line + 50; i++) {
+                                const line = structLines[i];
+                                for (const char of line) {
+                                    if (char === '{') {
+                                        braceCount++;
+                                        foundBrace = true;
+                                    } else if (char === '}') {
+                                        braceCount--;
+                                        if (foundBrace && braceCount === 0) {
+                                            // Found closing brace
+                                            const definitionLines = structLines.slice(structInfo.line, i + 1);
+                                            fullDefinition = definitionLines.join('\n').trim();
+                                            break;
+                                        }
+                                    }
+                                }
+                                if (foundBrace && braceCount === 0) break;
+                            }
+                            
+                            // If we didn't find a full definition, just use the declaration line
+                            if (!foundBrace || braceCount !== 0) {
+                                fullDefinition = structLine;
+                            }
+                        }
+                        
+                        const md = new vscode.MarkdownString();
+                        md.isTrusted = false;
+                        md.appendCodeblock(fullDefinition, 'hlsl');
+                        md.appendMarkdown(`\n\n**Type**\n\nDefined in: \`${path.basename(structInfo.uri.fsPath)}\``);
+                        return new vscode.Hover(md, range);
+                    }
+                } catch (e) {
+                    debugLog(`Error reading struct file: ${e.message}`);
+                }
+                
+                // Fallback if file reading fails
+                const md = new vscode.MarkdownString();
+                md.isTrusted = false;
+                md.appendCodeblock(`struct ${word}`, 'hlsl');
+                md.appendMarkdown(`\n\n**Type**\n\nDefined in: \`${path.basename(structInfo.uri.fsPath)}\``);
+                return new vscode.Hover(md, range);
+            }
+            
             const info = macroIndex.get(word);
             if (info) {
                 const md = new vscode.MarkdownString();
@@ -1072,11 +2536,12 @@ function activate(context) {
             const textureTypes = new Set(['Texture2D', 'Texture3D', 'TextureCube', 'Texture2DArray', 
                 'RWTexture2D', 'RWTexture3D', 'RWTexture1D', 'Texture1D', 'Texture2DMS']);
             const samplerTypes = new Set(['Sampler', 'SamplerState', 'SamplerComparisonState']);
+            const bufferTypes = new Set(['StructuredBuffer', 'Buffer', 'RWStructuredBuffer', 'RWBuffer']);
             const samplerProperties = new Set(['MaxAnisotropy', 'MinFilter', 'MagFilter', 'MipFilter', 
                 'ReductionType', 'AddressU', 'AddressV', 'AddressW', 'MinLOD', 'MaxLOD']);
             const samplerValues = new Set(['Point', 'Linear', 'Wrap', 'Clamp', 'Mirror', 'Border', 'Filter']);
             
-            if (textureTypes.has(word) || samplerTypes.has(word) || samplerProperties.has(word) || samplerValues.has(word)) {
+            if (textureTypes.has(word) || samplerTypes.has(word) || bufferTypes.has(word) || samplerProperties.has(word) || samplerValues.has(word)) {
                 const doc = builtinDocs.get(word);
                 if (doc) {
                     const virtualUri = vscode.Uri.parse(`azsl-builtin://documentation/${word}.azsli`);
@@ -1111,6 +2576,132 @@ function activate(context) {
     });
     context.subscriptions.push(srgSemanticDef);
     disposables.push(srgSemanticDef);
+    
+    const srgMemberDef = vscode.languages.registerDefinitionProvider({ language: 'azsl' }, {
+        provideDefinition(document, position) {
+            const range = document.getWordRangeAtPosition(position, /[A-Za-z_][A-Za-z0-9_]*/);
+            if (!range) return;
+            const word = document.getText(range);
+            
+            const line = document.lineAt(position.line).text;
+            const beforeCursor = line.substring(0, position.character);
+            const afterWord = line.substring(range.end.character);
+            
+            debugLog(`SRG definition lookup: word="${word}", before="${beforeCursor}", afterWord="${afterWord}"`);
+            debugLog(`srgIndex has keys: ${Array.from(srgIndex.keys()).join(', ')}`);
+            debugLog(`srgMemberIndex has keys: ${Array.from(srgMemberIndex.keys()).slice(0, 10).join(', ')}...`);
+            
+            const srgMatch = beforeCursor.match(/([A-Za-z_][A-Za-z0-9_]*)\s*::\s*$/);
+            
+            if (srgMatch) {
+                const srgName = srgMatch[1];
+                debugLog(`SRG member access detected: ${srgName}::${word}`);
+                const memberKey = `${srgName}::${word}`;
+                const memberInfo = srgMemberIndex.get(memberKey);
+                if (memberInfo) {
+                    debugLog(`Found member in index: ${memberKey}`);
+                    return new vscode.Location(memberInfo.uri, new vscode.Position(memberInfo.line, 0));
+                }
+                if (srgMembers.has(srgName)) {
+                    const members = srgMembers.get(srgName);
+                    if (members.has(word)) {
+                        debugLog(`Found member in srgMembers: ${memberKey}`);
+                        const virtualUri = vscode.Uri.parse(`azsl-builtin://srg/${srgName}/${word}.azsli`);
+                        return new vscode.Location(virtualUri, new vscode.Position(0, 0));
+                    }
+                }
+                debugLog(`Member not found: ${memberKey}`);
+            }
+            
+            const srgNameMatch = afterWord.match(/^\s*::/);
+            if (srgNameMatch && srgIndex.has(word)) {
+                debugLog(`SRG name before :: detected: ${word}`);
+                const srgInfo = srgIndex.get(word);
+                return new vscode.Location(srgInfo.uri, new vscode.Position(srgInfo.line, 0));
+            }
+            
+            if (srgIndex.has(word) && !beforeCursor.match(/[A-Za-z0-9_]$/) && !afterWord.match(/^\s*::/)) {
+                debugLog(`Standalone SRG name detected: ${word}`);
+                const srgInfo = srgIndex.get(word);
+                return new vscode.Location(srgInfo.uri, new vscode.Position(srgInfo.line, 0));
+            }
+            
+            debugLog(`No SRG definition found for: ${word}`);
+            return null;
+        }
+    });
+    context.subscriptions.push(srgMemberDef);
+    disposables.push(srgMemberDef);
+    
+    const structDef = vscode.languages.registerDefinitionProvider({ language: 'azsl' }, {
+        provideDefinition(document, position) {
+            const range = document.getWordRangeAtPosition(position, /[A-Za-z_][A-Za-z0-9_]*/);
+            if (!range) return;
+            const word = document.getText(range);
+            
+            if (word === 'StructuredBuffer' || word === 'Buffer' || word === 'RWStructuredBuffer' || word === 'RWBuffer') {
+                return null;
+            }
+            
+            const line = document.lineAt(position.line).text;
+            const beforeWord = line.substring(0, range.start.character);
+            const afterWord = line.substring(range.end.character);
+            
+            debugLog(`[structDef] ===== Struct definition lookup =====`);
+            debugLog(`[structDef] word="${word}"`);
+            debugLog(`[structDef] document: ${path.basename(document.uri.fsPath)}`);
+            debugLog(`[structDef] position: line ${position.line + 1}, char ${position.character}`);
+            debugLog(`[structDef] beforeWord="${beforeWord}", afterWord="${afterWord}"`);
+            
+            // First, check if the struct is defined in the current document
+            const text = document.getText();
+            debugLog(`[structDef] Extracting structs from current document: ${path.basename(document.uri.fsPath)}`);
+            const currentDocStructs = extractStructDeclarations(text, document.uri.fsPath);
+            debugLog(`[structDef] Current document structs found: ${Array.from(currentDocStructs.structs.keys()).join(', ')}`);
+            debugLog(`[structDef] Checking if "${word}" is in current document structs: ${currentDocStructs.structs.has(word)}`);
+            
+            if (currentDocStructs.structs.has(word)) {
+                const localStructInfo = currentDocStructs.structs.get(word);
+                debugLog(`[structDef] ✓ Found struct in current document: ${word} -> ${path.basename(document.uri.fsPath)}:${localStructInfo.line + 1}`);
+                debugLog(`[structDef] Returning location: ${document.uri.fsPath}:${localStructInfo.line + 1}`);
+                return new vscode.Location(document.uri, new vscode.Position(localStructInfo.line, 0));
+            }
+            
+            debugLog(`[structDef] ✗ Struct "${word}" NOT found in current document, will check structIndex`);
+            
+            debugLog(`[structDef] Struct "${word}" not found in current document, checking structIndex...`);
+            debugLog(`[structDef] structIndex.has("${word}"): ${structIndex.has(word)}`);
+            if (structIndex.has(word)) {
+                const structInfo = structIndex.get(word);
+                debugLog(`[structDef] structIndex entry for "${word}": ${path.basename(structInfo.uri.fsPath)}:${structInfo.line + 1}`);
+            }
+            
+            const structuredBufferMatch = beforeWord.match(/StructuredBuffer\s*<\s*$/);
+            const bufferMatch = beforeWord.match(/\bBuffer\s*<\s*$/);
+            
+            if (structuredBufferMatch || bufferMatch) {
+                debugLog(`[structDef] Template type detected: ${word} in ${structuredBufferMatch ? 'StructuredBuffer' : 'Buffer'}`);
+                const structInfo = structIndex.get(word);
+                if (structInfo) {
+                    debugLog(`[structDef] Found struct in index: ${word} -> ${structInfo.uri.fsPath}:${structInfo.line + 1}`);
+                    return new vscode.Location(structInfo.uri, new vscode.Position(structInfo.line, 0));
+                }
+                debugLog(`[structDef] Struct not found in index: ${word}`);
+            }
+            
+            if (structIndex.has(word)) {
+                debugLog(`[structDef] Standalone struct name detected: ${word}`);
+                const structInfo = structIndex.get(word);
+                debugLog(`[structDef] Returning definition from structIndex: ${path.basename(structInfo.uri.fsPath)}:${structInfo.line + 1}`);
+                return new vscode.Location(structInfo.uri, new vscode.Position(structInfo.line, 0));
+            }
+            
+            debugLog(`[structDef] No definition found for "${word}"`);
+            return null;
+        }
+    });
+    context.subscriptions.push(structDef);
+    disposables.push(structDef);
     
     // Text document content provider for built-in type documentation
     const builtinDocProvider = vscode.workspace.registerTextDocumentContentProvider('azsl-builtin', {
@@ -1221,6 +2812,29 @@ function activate(context) {
     context.subscriptions.push(builtinDocProvider);
     disposables.push(builtinDocProvider);
     
+    const srgMemberDocProvider = vscode.workspace.registerTextDocumentContentProvider('azsl-builtin', {
+        provideTextDocumentContent(uri) {
+            if (uri.path.startsWith('/srg/')) {
+                const parts = uri.path.split('/');
+                if (parts.length >= 4) {
+                    const srgName = parts[2];
+                    const memberName = path.basename(parts[3], '.azsli');
+                    
+                    if (srgMembers.has(srgName) && srgMembers.get(srgName).has(memberName)) {
+                        let content = `/*\n * ${srgName}::${memberName}\n *\n`;
+                        content += ` * Member of ShaderResourceGroup: ${srgName}\n */\n\n`;
+                        content += `// Example usage:\n`;
+                        content += `${srgName}::${memberName};\n`;
+                        return content;
+                    }
+                }
+            }
+            return null;
+        }
+    });
+    context.subscriptions.push(srgMemberDocProvider);
+    disposables.push(srgMemberDocProvider);
+    
     const tokenTypes = ['type', 'function', 'variable', 'parameter', 'property', 'method', 'modifier', 'macro'];
     const tokenModifiers = ['declaration', 'definition', 'readonly', 'static'];
     const legend = new vscode.SemanticTokensLegend(tokenTypes, tokenModifiers);
@@ -1245,7 +2859,8 @@ function activate(context) {
                 'int', 'int2', 'int3', 'int4', 'uint', 'uint2', 'uint3', 'uint4',
                 'bool', 'half', 'double', 'void', 'matrix',
                 'Texture2D', 'Texture3D', 'TextureCube', 'Texture2DArray', 'RWTexture2D',
-                'Sampler', 'SamplerState', 'SamplerComparisonState'
+                'Sampler', 'SamplerState', 'SamplerComparisonState',
+                'StructuredBuffer', 'Buffer', 'RWStructuredBuffer', 'RWBuffer'
             ]);
             
             const macroTypes = new Set();
@@ -1258,9 +2873,15 @@ function activate(context) {
             }
             
             const userTypes = new Set();
+            // Also check structIndex for types from Gem headers
+            for (const structName of structIndex.keys()) {
+                if (!builtinTypes.has(structName) && !macroTypes.has(structName)) {
+                    userTypes.add(structName);
+                }
+            }
             for (const line of lines) {
                 const structMatch = line.match(/\b(?:struct|class)\s+([A-Z][A-Za-z0-9_]*)\b/);
-                if (structMatch) {
+                if (structMatch && !builtinTypes.has(structMatch[1]) && !macroTypes.has(structMatch[1])) {
                     userTypes.add(structMatch[1]);
                 }
                 const typeMatch = line.match(/\b([A-Z][A-Za-z0-9_]+)\s+[A-Za-z_][A-Za-z0-9_]*\s*[;=,\[\(]/);
@@ -1277,6 +2898,31 @@ function activate(context) {
                 processedLine = processedLine.replace(/\/\/.*$/g, '');
                 processedLine = processedLine.replace(/\/\*[\s\S]*?\*\//g, '');
                 processedLine = processedLine.replace(/"[^"]*"/g, '""');
+                
+                // Don't highlight basic types (bool, float, int, uint, etc.) as semantic tokens
+                // They should use default textmate grammar highlighting only
+                // Only highlight complex builtin types like Texture2D, Sampler, etc.
+                const complexBuiltinTypes = new Set([
+                    'Texture2D', 'Texture3D', 'TextureCube', 'Texture2DArray', 'RWTexture2D', 'RWTexture3D',
+                    'Texture1D', 'Texture2DMS', 'RWTexture1D', 'RWTextureCube', 'RWTexture2DArray',
+                    'Sampler', 'SamplerState', 'SamplerComparisonState',
+                    'StructuredBuffer', 'Buffer', 'RWStructuredBuffer', 'RWBuffer'
+                ]);
+                
+                for (const type of complexBuiltinTypes) {
+                    const regex = new RegExp(`\\b${type.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g');
+                    let match;
+                    while ((match = regex.exec(processedLine)) !== null) {
+                        const before = processedLine.substring(0, match.index);
+                        const after = processedLine.substring(match.index + match[0].length);
+                        if (after.match(/^\s*[<\(]/) || 
+                            after.match(/^\s+[A-Za-z_]/) || 
+                            before.match(/(?:^|\s|\(|,|\[|::|\.)$/) ||
+                            (before.trim() === '' && after.match(/^\s*[A-Za-z_]/))) {
+                            builder.push(lineNumber, match.index, match[0].length, TOKEN_TYPE);
+                        }
+                    }
+                }
                 
                 for (const type of macroTypes) {
                     const regex = new RegExp(`\\b${type.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g');
@@ -1303,6 +2949,82 @@ function activate(context) {
                             (before.trim() === '' && after.match(/^\s*[A-Za-z_]/))) {
                             builder.push(lineNumber, match.index, match[0].length, 0);
                         }
+                    }
+                }
+                
+                // Highlight template arguments inside <...>
+                // Parse template arguments with proper bracket matching
+                let pos = 0;
+                while (pos < processedLine.length) {
+                    const openBracket = processedLine.indexOf('<', pos);
+                    if (openBracket === -1) break;
+                    
+                    // Find matching closing bracket
+                    let depth = 0;
+                    let closeBracket = -1;
+                    for (let i = openBracket; i < processedLine.length; i++) {
+                        if (processedLine[i] === '<') depth++;
+                        else if (processedLine[i] === '>') {
+                            depth--;
+                            if (depth === 0) {
+                                closeBracket = i;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    if (closeBracket === -1) break;
+                    
+                    const templateContent = processedLine.substring(openBracket + 1, closeBracket);
+                    const templateStart = openBracket + 1;
+                    
+                    // Find types inside template arguments
+                    // Exclude basic types (uint, int, float, etc.) from highlighting in templates
+                    const basicTypes = new Set(['uint', 'int', 'float', 'bool', 'half', 'double', 'void', 
+                                                'uint2', 'uint3', 'uint4', 'int2', 'int3', 'int4',
+                                                'float2', 'float3', 'float4', 'real', 'real2', 'real3', 'real4']);
+                    
+                    // Include struct types from structIndex
+                    const structTypes = new Set();
+                    for (const structName of structIndex.keys()) {
+                        structTypes.add(structName);
+                    }
+                    
+                    // Types to highlight in templates: user types, struct types, complex builtin types (not basic)
+                    const templateTypes = new Set([...macroTypes, ...userTypes, ...structTypes]);
+                    for (const type of builtinTypes) {
+                        if (!basicTypes.has(type)) {
+                            templateTypes.add(type);
+                        }
+                    }
+                    
+                    for (const type of templateTypes) {
+                        const typeRegex = new RegExp(`\\b${type.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g');
+                        let typeMatch;
+                        while ((typeMatch = typeRegex.exec(templateContent)) !== null) {
+                            const beforeInTemplate = templateContent.substring(0, typeMatch.index);
+                            const afterInTemplate = templateContent.substring(typeMatch.index + typeMatch[0].length);
+                            // Check if it's a type (not part of a larger word)
+                            if (beforeInTemplate.match(/(?:^|\s|,)$/) && 
+                                afterInTemplate.match(/^\s*(?:,|>|$)/)) {
+                                const absolutePos = templateStart + typeMatch.index;
+                                builder.push(lineNumber, absolutePos, typeMatch[0].length, TOKEN_TYPE);
+                            }
+                        }
+                    }
+                    
+                    pos = closeBracket + 1;
+                }
+                
+                // Highlight keywords like 'precise' as modifiers
+                const keywordRegex = /\b(precise|groupshared|static|const|uniform|extern|inline|noinline)\b/g;
+                let keywordMatch;
+                while ((keywordMatch = keywordRegex.exec(processedLine)) !== null) {
+                    const before = processedLine.substring(0, keywordMatch.index);
+                    const after = processedLine.substring(keywordMatch.index + keywordMatch[0].length);
+                    // Check if it's used as a keyword/modifier (before a type or variable)
+                    if (after.match(/^\s+(?:float|int|uint|bool|half|double|real|Texture|Sampler|[A-Z][A-Za-z0-9_]*|[a-z_][a-zA-Z0-9_]*)/)) {
+                        builder.push(lineNumber, keywordMatch.index, keywordMatch[0].length, TOKEN_FUNCTION);
                     }
                 }
                 
@@ -1365,6 +3087,37 @@ function activate(context) {
     context.subscriptions.push(semanticTokens);
     disposables.push(semanticTokens);
     
+    const functionDef = vscode.languages.registerDefinitionProvider({ language: 'azsl' }, {
+        provideDefinition(document, position) {
+            const range = document.getWordRangeAtPosition(position, /[A-Za-z_][A-Za-z0-9_]*/);
+            if (!range) return;
+            const funcName = document.getText(range);
+            
+            const lineText = document.lineAt(position.line).text;
+            const funcStart = range.start.character;
+            const beforeFunc = lineText.substring(0, funcStart);
+            
+            // Check if this is a function call (not a method call)
+            // Function call should not have . or :: before it
+            if (beforeFunc.match(/[A-Za-z_][A-Za-z0-9_]*\s*[\.:]\s*$/)) {
+                return; // This is a method call, not a function call
+            }
+            
+            // Check if it's followed by ( to confirm it's a function call
+            const afterFunc = lineText.substring(range.end.character);
+            if (!afterFunc.trim().startsWith('(')) {
+                return; // Not a function call
+            }
+            
+            const funcInfo = functionIndex.get(funcName);
+            if (funcInfo) {
+                return new vscode.Location(funcInfo.uri, new vscode.Position(funcInfo.line, funcInfo.column || 0));
+            }
+            
+            return null;
+        }
+    });
+    
     const atomMethodDef = vscode.languages.registerDefinitionProvider({ language: 'azsl' }, {
         provideDefinition(document, position) {
             const range = document.getWordRangeAtPosition(position, /[A-Za-z_][A-Za-z0-9_]*/);
@@ -1420,6 +3173,8 @@ function activate(context) {
             return new vscode.Location(methodInfo.uri, new vscode.Position(methodInfo.line, methodInfo.column));
         }
     });
+    context.subscriptions.push(functionDef);
+    disposables.push(functionDef);
     context.subscriptions.push(atomMethodDef);
     disposables.push(atomMethodDef);
     
@@ -1439,6 +3194,18 @@ function activate(context) {
     disposables.push(openWatcher, changeWatcher);
     
     const diagnosticCollection = vscode.languages.createDiagnosticCollection('azsl');
+    
+    // Register Code Action Provider for Quick Fix
+    const codeActionProvider = vscode.languages.registerCodeActionsProvider(
+        { language: 'azsl' },
+        {
+            provideCodeActions
+        },
+        {
+            providedCodeActionKinds: [vscode.CodeActionKind.QuickFix]
+        }
+    );
+    context.subscriptions.push(codeActionProvider);
     context.subscriptions.push(diagnosticCollection);
     
     const builtinIdentifiers = new Set([
@@ -1466,6 +3233,7 @@ function activate(context) {
         const declarations = new Set();
         const lines = text.split(/\r?\n/);
         const knownStructs = new Set();
+        const variableTypes = new Map();
         
         for (const line of lines) {
             const structMatch = line.match(/\bstruct\s+([A-Za-z_][A-Za-z0-9_]*)\b/);
@@ -1475,8 +3243,8 @@ function activate(context) {
             }
             
             const patterns = [
-                /\bconst\s+(?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix|Texture\w*|Sampler\w*|[A-Z][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\]]*\]\s*)?[;=]/,
-                /\b(?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix|Texture\w*|Sampler\w*|[A-Z][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\]]*\]\s*)?[;=]/
+                /\bconst\s+(?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix|Texture\w*|Sampler(?:State|ComparisonState|\w*)?|[A-Z][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\]]*\]\s*)?[;=]/,
+                /\b(?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix|Texture\w*|Sampler(?:State|ComparisonState|\w*)?|[A-Z][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\]]*\]\s*)?[;=]/
             ];
             for (const pattern of patterns) {
                 const match = line.match(pattern);
@@ -1519,9 +3287,30 @@ function activate(context) {
                 currentSrg = '';
             }
             if (inSrg && currentSrg) {
-                const memberMatch = line.match(/^\s*(?:float|int|uint|bool|Texture\w*|Sampler\w*|[A-Z][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*[;{]/);
+                // Try to match member declaration with ; or { on same line
+                let memberMatch = line.match(/^\s*(?:(?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix|(Texture\w*)|(Sampler(?:State|ComparisonState|\w*)?)|([A-Z][A-Za-z0-9_]*)))\s+([A-Za-z_][A-Za-z0-9_]*)\s*[;{]/);
+                // If no match, try to match member declaration without ; or { (for multiline declarations like Sampler name { ... })
+                if (!memberMatch && i + 1 < lines.length) {
+                    const nextLine = lines[i + 1];
+                    if (nextLine.trim().startsWith('{')) {
+                        memberMatch = line.match(/^\s*(?:(?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix|(Texture\w*)|(Sampler(?:State|ComparisonState|\w*)?)|([A-Z][A-Za-z0-9_]*)))\s+([A-Za-z_][A-Za-z0-9_]*)\s*$/);
+                    }
+                }
                 if (memberMatch) {
-                    declarations.add(`${currentSrg}::${memberMatch[1]}`);
+                    const memberName = memberMatch[4];
+                    declarations.add(`${currentSrg}::${memberName}`);
+                    const textureType = memberMatch[1];
+                    const samplerType = memberMatch[2];
+                    const typeName = memberMatch[3];
+                    if (textureType) {
+                        variableTypes.set(`${currentSrg}::${memberName}`, textureType);
+                    } else if (samplerType) {
+                        // Normalize sampler type (Sampler -> SamplerState, SamplerState -> SamplerState, etc.)
+                        const normalizedSamplerType = samplerType === 'Sampler' ? 'SamplerState' : samplerType;
+                        variableTypes.set(`${currentSrg}::${memberName}`, normalizedSamplerType);
+                    } else if (typeName) {
+                        variableTypes.set(`${currentSrg}::${memberName}`, typeName);
+                    }
                 }
             }
         }
@@ -1574,7 +3363,7 @@ function activate(context) {
                     braceDepth -= (line.match(/\}/g) || []).length;
                 }
                 
-                const memberMatch = line.match(/^\s*(?:precise\s+)?(?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|Texture\w*|Sampler\w*|[A-Z][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*[;=\(]/);
+                const memberMatch = line.match(/^\s*(?:precise\s+)?(?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|Texture\w*|Sampler(?:State|ComparisonState|\w*)?|[A-Z][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*[;=\(]/);
                 if (memberMatch) {
                     const memberName = memberMatch[1];
                     classMembers.get(currentClass).add(memberName);
@@ -1588,7 +3377,7 @@ function activate(context) {
             }
         }
         
-        return { declarations, knownStructs, classMembers };
+        return { declarations, knownStructs, classMembers, variableTypes };
     }
     
     function validateDocument(document) {
@@ -1597,7 +3386,7 @@ function activate(context) {
         const fileName = document.fileName.split(/[/\\]/).pop();
         const text = document.getText();
         
-        const { declarations, knownStructs, classMembers } = extractDeclarations(text);
+        const { declarations, knownStructs, classMembers, variableTypes: extractedVariableTypes } = extractDeclarations(text);
         const diagnostics = [];
         const lines = text.split(/\r?\n/);
         
@@ -1625,6 +3414,39 @@ function activate(context) {
         ]);
         for (const t of atomTypes) declarations.add(t);
         
+        // Extract struct declarations from current document to ensure local structs are indexed
+        // But only if they are not already found in indexed files (gems)
+        // This ensures that go-to-definition prioritizes definitions from gems
+        const currentDocStructs = extractStructDeclarations(text, document.uri.fsPath);
+        for (const [structName, structInfo] of currentDocStructs.structs.entries()) {
+            // Only add local struct if it's not already in the index (from indexed files)
+            // This ensures that go-to-definition prioritizes definitions from gems
+            if (!structIndex.has(structName)) {
+                structIndex.set(structName, {
+                    uri: structInfo.uri,
+                    line: structInfo.line
+                });
+                debugLog(`[validateDocument] Added local struct to index: ${structName} at line ${structInfo.line + 1}`);
+            } else {
+                // If struct is already in index (from gem), don't override it
+                // This ensures go-to-definition goes to gem definition, not local
+                debugLog(`[validateDocument] Struct ${structName} already indexed from gem at ${path.basename(structIndex.get(structName).uri.fsPath)}:${structIndex.get(structName).line + 1}, skipping local definition`);
+            }
+            // Store struct members (always merge with existing if any)
+            // This allows local overrides/extensions to work for members
+            if (!structMembers.has(structName)) {
+                structMembers.set(structName, new Set());
+            }
+            const existingMembers = structMembers.get(structName);
+            const members = currentDocStructs.members.get(structName);
+            if (members) {
+                for (const member of members) {
+                    existingMembers.add(member);
+                    debugLog(`[validateDocument] Local struct ${structName} has member: ${member}`);
+                }
+            }
+        }
+        
         if (!atomTypeMembers.has('Surface')) {
             atomTypeMembers.set('Surface', new Set([
                 'position', 'normal', 'vertexNormal', 'metallic', 'roughnessLinear',
@@ -1640,25 +3462,408 @@ function activate(context) {
                 'Init', 'FinalizeLighting'
             ]));
         }
+        if (!atomTypeMembers.has('ForwardPassOutput')) {
+            atomTypeMembers.set('ForwardPassOutput', new Set([
+                'm_color', 'm_diffuseColor', 'm_specularColor', 'm_albedo', 
+                'm_specularF0', 'm_normal', 'm_scatterDistance', 'm_depth'
+            ]));
+        }
+        // Also ensure ForwardPassOutput members are in structMembers for validation
+        if (!structMembers.has('ForwardPassOutput')) {
+            structMembers.set('ForwardPassOutput', new Set([
+                'm_color', 'm_diffuseColor', 'm_specularColor', 'm_albedo', 
+                'm_specularF0', 'm_normal', 'm_scatterDistance', 'm_depth'
+            ]));
+        }
+        // Ensure DirectionalLight members are indexed
+        if (!structMembers.has('DirectionalLight')) {
+            structMembers.set('DirectionalLight', new Set([
+                'm_direction', 'm_angularRadius', 'm_rgbIntensityLux', 
+                'm_affectsGIFactor', 'm_affectsGI', 'm_lightingChannelMask', 'm_padding'
+            ]));
+            debugLog(`[validateDocument] Added DirectionalLight members to structMembers: ${Array.from(structMembers.get('DirectionalLight')).join(', ')}`);
+        } else {
+            debugLog(`[validateDocument] DirectionalLight already in structMembers with ${structMembers.get('DirectionalLight').size} members: ${Array.from(structMembers.get('DirectionalLight')).join(', ')}`);
+        }
         
         
-        const variableTypes = new Map();
-        for (let i = 0; i < lines.length; i++) {
-            const line = lines[i];
-            const constVarDeclMatch = line.match(/\bconst\s+(?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix|Texture\w*|Sampler\w*|([A-Z][A-Za-z0-9_]*))\s+([A-Za-z_][A-Za-z0-9_]*)\s*[;=]/);
-            if (constVarDeclMatch && constVarDeclMatch[1]) {
-                const typeName = constVarDeclMatch[1];
-                const varName = constVarDeclMatch[2];
-                if (knownStructs.has(typeName) || atomTypes.has(typeName) || pascalCaseTypes.has(typeName)) {
-                    variableTypes.set(varName, typeName);
+        const variableTypes = new Map(extractedVariableTypes);
+        // Track variable declarations with their scope (braceDepth and line number)
+        const variableDeclarations = new Map(); // varName -> Array<{type, line, braceDepth}>
+        // Track function return types and scopes
+        const functionReturnTypes = new Map(); // line number -> return type
+        const functionScopes = []; // stack of {startLine, endLine, returnType, firstParamType}
+        let braceDepth = 0;
+        
+        // Helper function to get variable type at a specific line, considering scope
+        const getVariableTypeAtLine = (varName, lineNum, currentBraceDepth) => {
+            if (!variableDeclarations.has(varName)) {
+                // Fallback to old variableTypes map
+                if (variableTypes.has(varName)) {
+                    return variableTypes.get(varName);
+                }
+                return null;
+            }
+            const declarations = variableDeclarations.get(varName);
+            // Find the most recent declaration that is in scope at lineNum
+            // A declaration is in scope if its braceDepth <= currentBraceDepth and its line <= lineNum
+            let bestMatch = null;
+            let bestBraceDepth = -1;
+            for (const decl of declarations) {
+                if (decl.line <= lineNum && decl.braceDepth <= currentBraceDepth) {
+                    if (decl.braceDepth > bestBraceDepth) {
+                        bestBraceDepth = decl.braceDepth;
+                        bestMatch = decl;
+                    } else if (decl.braceDepth === bestBraceDepth && decl.line > (bestMatch ? bestMatch.line : -1)) {
+                        bestMatch = decl;
+                    }
                 }
             }
-            const varDeclMatch = line.match(/\b(?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix|Texture\w*|Sampler\w*|([A-Z][A-Za-z0-9_]*))\s+([A-Za-z_][A-Za-z0-9_]*)\s*[;=]/);
-            if (varDeclMatch && varDeclMatch[1] && varDeclMatch[2]) {
-                const typeName = varDeclMatch[1];
+            if (bestMatch) {
+                debugLog(`[getVariableTypeAtLine] Found ${varName} at line ${lineNum + 1}, braceDepth ${currentBraceDepth}: type=${bestMatch.type} (declared at line ${bestMatch.line + 1}, braceDepth ${bestMatch.braceDepth})`);
+                return bestMatch.type;
+            }
+            // Fallback to old variableTypes map
+            if (variableTypes.has(varName)) {
+                debugLog(`[getVariableTypeAtLine] Using fallback variableTypes for ${varName} at line ${lineNum + 1}`);
+                return variableTypes.get(varName);
+            }
+            debugLog(`[getVariableTypeAtLine] No declaration found for ${varName} at line ${lineNum + 1}, braceDepth ${currentBraceDepth}`);
+            return null;
+        };
+        let currentFunctionStart = -1;
+        let currentFunctionReturnType = null;
+        let currentFunctionFirstParamType = null;
+        
+        // First pass: parse function signatures and track scopes
+        let currentBraceDepth = 0;
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            // Match function signatures: TypeName funcName(TypeName paramName, ...)
+            const funcSigMatch = line.match(/^\s*((?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix(?:[1-4]x[1-4])?|Texture\w*|Sampler\w*|[A-Z][A-Za-z0-9_]*))\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/);
+            if (funcSigMatch && !line.trim().startsWith('//')) {
+                const returnType = funcSigMatch[1];
+                const funcName = funcSigMatch[2];
+                currentFunctionStart = i;
+                currentFunctionReturnType = returnType;
+                
+                // Extract first parameter type from function signature
+                // Match patterns like: VertexShaderInput IN, uint instanceId : SV_InstanceID
+                const funcParams = line.match(/\b((?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix(?:[1-4]x[1-4])?|Texture\w*|Sampler\w*|[A-Z][A-Za-z0-9_]*))\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:[,:)]|$)/);
+                if (funcParams) {
+                    const paramMatch = funcParams[0].match(/\b((?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix(?:[1-4]x[1-4])?|Texture\w*|Sampler\w*|[A-Z][A-Za-z0-9_]*))\s+([A-Za-z_][A-Za-z0-9_]*)/);
+                    if (paramMatch) {
+                        currentFunctionFirstParamType = paramMatch[1];
+                        debugLog(`[validateDocument] Found function ${funcName} with return type ${returnType} and first param type ${currentFunctionFirstParamType} at line ${i+1}`);
+                    } else {
+                        debugLog(`[validateDocument] Found function ${funcName} with return type ${returnType} at line ${i+1}`);
+                    }
+                } else {
+                    debugLog(`[validateDocument] Found function ${funcName} with return type ${returnType} at line ${i+1}`);
+                }
+            }
+            
+            // Track brace depth to determine function scope
+            const openBraces = (line.match(/{/g) || []).length;
+            const closeBraces = (line.match(/}/g) || []).length;
+            const prevBraceDepth = currentBraceDepth;
+            currentBraceDepth += openBraces - closeBraces;
+            
+            // Check if function body started (opening brace found after function signature)
+            // This handles both cases: opening brace on same line or next line
+            if (currentFunctionStart >= 0 && prevBraceDepth === 0 && currentBraceDepth > 0) {
+                // Function body started
+                const existingScope = functionScopes.find(s => s.startLine === currentFunctionStart);
+                if (!existingScope) {
+                    functionScopes.push({
+                        startLine: currentFunctionStart,
+                        returnType: currentFunctionReturnType,
+                        firstParamType: currentFunctionFirstParamType,
+                        endLine: null
+                    });
+                    debugLog(`[validateDocument] Function body started at line ${i+1}, return type: ${currentFunctionReturnType}, first param type: ${currentFunctionFirstParamType}, startLine: ${currentFunctionStart + 1}`);
+                }
+            }
+            
+            // Check if function ended
+            if (currentFunctionStart >= 0 && prevBraceDepth === 1 && currentBraceDepth === 0) {
+                // Function ended
+                const scope = functionScopes.find(s => s.startLine === currentFunctionStart);
+                if (scope) {
+                    scope.endLine = i;
+                    functionReturnTypes.set(scope.startLine, scope.returnType);
+                    debugLog(`[validateDocument] Function ended at line ${i+1}, startLine: ${currentFunctionStart + 1}, returnType: ${scope.returnType}`);
+                }
+                currentFunctionStart = -1;
+                currentFunctionReturnType = null;
+                currentFunctionFirstParamType = null;
+            }
+        }
+        
+        debugLog(`[validateDocument] Total functions found: ${functionScopes.length}`);
+        for (const scope of functionScopes) {
+            debugLog(`[validateDocument] Function scope: startLine=${scope.startLine + 1}, endLine=${scope.endLine ? scope.endLine + 1 : 'null'}, returnType=${scope.returnType}, firstParamType=${scope.firstParamType || 'null'}`);
+        }
+        
+        // Check for non-static options and ShaderVariantFallback requirement
+        // Only check in .azsl files, not in .azsli header files
+        const isAzslFile = fileName.endsWith('.azsl') && !fileName.endsWith('.azsli');
+        
+        const nonStaticOptions = [];
+        let hasShaderVariantFallback = false;
+        // Semantics that have ShaderVariantFallback property
+        const variantFallbackSemantics = new Set(['SRG_PerDraw', 'SRG_PerPass_WithFallback', 'SRG_RayTracingGlobal']);
+        
+        // Only check for options in .azsl files
+        if (isAzslFile) {
+            // First, collect non-static options from indexed files (include files)
+            for (const [optionName, optionInfo] of optionIndex.entries()) {
+                if (!optionInfo.isStatic) {
+                    nonStaticOptions.push({ name: optionName, line: -1, fromIndex: true });
+                    debugLog(`[validateDocument] Found non-static option from index: ${optionName}`);
+                }
+            }
+        }
+        
+        // Track multi-line comment state
+        let inMultiLineComment = false;
+        
+        for (let i = 0; i < lines.length; i++) {
+            let line = lines[i];
+            const trimmedLine = line.trim();
+            
+            // Handle multi-line comments
+            if (inMultiLineComment) {
+                const commentEnd = line.indexOf('*/');
+                if (commentEnd !== -1) {
+                    inMultiLineComment = false;
+                    line = line.substring(commentEnd + 2);
+                } else {
+                    continue; // Still inside multi-line comment
+                }
+            }
+            
+            // Check for start of multi-line comment
+            const multiLineStart = line.indexOf('/*');
+            if (multiLineStart !== -1) {
+                const commentEnd = line.indexOf('*/', multiLineStart + 2);
+                if (commentEnd !== -1) {
+                    // Comment ends on same line
+                    line = line.substring(0, multiLineStart) + line.substring(commentEnd + 2);
+                } else {
+                    // Comment continues to next line
+                    inMultiLineComment = true;
+                    line = line.substring(0, multiLineStart);
+                }
+            }
+            
+            // Remove single-line comments
+            const singleLineComment = line.indexOf('//');
+            if (singleLineComment !== -1) {
+                line = line.substring(0, singleLineComment);
+            }
+            
+            const processedLine = line.trim();
+            
+            // Skip empty lines
+            if (!processedLine) {
+                continue;
+            }
+            
+            // Check for non-static option declarations in current file
+            // Match: option bool/int/uint name = value; (without static keyword)
+            const optionMatch = processedLine.match(/^\s*option\s+(?:bool|int|uint)\s+([A-Za-z_][A-Za-z0-9_]*)\s*[=;]/);
+            if (optionMatch) {
+                // Check if it's not static
+                if (!processedLine.includes('static')) {
+                    const optionName = optionMatch[1];
+                    // Only add if not already in list (from index)
+                    if (!nonStaticOptions.some(o => o.name === optionName)) {
+                        nonStaticOptions.push({ name: optionName, line: i, fromIndex: false });
+                        debugLog(`[validateDocument] Found non-static option in current file: ${optionName} at line ${i + 1}`);
+                    }
+                }
+            }
+            
+            // Check for ShaderResourceGroup using a semantic
+            // Match: ShaderResourceGroup name : SemanticName (also handle "partial ShaderResourceGroup")
+            const srgMatch = processedLine.match(/(?:partial\s+)?ShaderResourceGroup\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z_][A-Za-z0-9_]*)/);
+            if (srgMatch) {
+                const srgName = srgMatch[1];
+                const semanticName = srgMatch[2];
+                
+                // Check if semantic is declared
+                if (!srgSemanticIndex.has(semanticName)) {
+                    const errorMessage = `Declaration for semantic ${semanticName} used in SRG ${srgName} was not found`;
+                    diagnostics.push(new vscode.Diagnostic(
+                        new vscode.Range(i, 0, i, lines[i].length),
+                        errorMessage,
+                        vscode.DiagnosticSeverity.Error
+                    ));
+                    debugLog(`[validateDocument] Error: Semantic ${semanticName} used in SRG ${srgName} at line ${i + 1} was not found`);
+                }
+                
+                // Check for ShaderVariantFallback
+                if (variantFallbackSemantics.has(semanticName)) {
+                    hasShaderVariantFallback = true;
+                    debugLog(`[validateDocument] Found SRG with ShaderVariantFallback semantic: ${srgName} : ${semanticName} at line ${i + 1}`);
+                }
+            }
+        }
+        
+        // If there are non-static options but no ShaderVariantFallback SRG, report global error
+        // Only check in .azsl files
+        if (isAzslFile) {
+            debugLog(`[validateDocument] ShaderVariantFallback check: nonStaticOptions=${nonStaticOptions.length}, hasShaderVariantFallback=${hasShaderVariantFallback}`);
+            if (nonStaticOptions.length > 0 && !hasShaderVariantFallback) {
+                // Report as global error on first line of document (like compiler does)
+                const errorMessage = `If you have non-static options, one SRG must be designated as the default ShaderVariantFallback`;
+                diagnostics.push(new vscode.Diagnostic(
+                    new vscode.Range(0, 0, 0, lines[0] ? lines[0].length : 0),
+                    errorMessage,
+                    vscode.DiagnosticSeverity.Error
+                ));
+                debugLog(`[validateDocument] Global error: Found ${nonStaticOptions.length} non-static option(s) (${nonStaticOptions.map(o => o.name).join(', ')}) but no SRG with ShaderVariantFallback semantic`);
+            }
+        }
+        
+        // Find current function scope for each line
+        const getCurrentFunctionReturnType = (lineNum) => {
+            debugLog(`[getCurrentFunctionReturnType] Checking line ${lineNum + 1}, functionScopes.length = ${functionScopes.length}`);
+            for (let j = functionScopes.length - 1; j >= 0; j--) {
+                const scope = functionScopes[j];
+                debugLog(`[getCurrentFunctionReturnType] Scope ${j}: startLine=${scope.startLine + 1}, endLine=${scope.endLine ? scope.endLine + 1 : 'null'}, returnType=${scope.returnType}`);
+                if (scope.startLine <= lineNum && (!scope.endLine || lineNum <= scope.endLine)) {
+                    debugLog(`[getCurrentFunctionReturnType] Found matching scope, returnType=${scope.returnType}`);
+                    return scope.returnType;
+                }
+            }
+            debugLog(`[getCurrentFunctionReturnType] No matching scope found for line ${lineNum + 1}`);
+            return null;
+        };
+        
+        const getCurrentFunctionParameterType = (lineNum) => {
+            debugLog(`[getCurrentFunctionParameterType] Checking line ${lineNum + 1}, functionScopes.length = ${functionScopes.length}`);
+            for (let j = functionScopes.length - 1; j >= 0; j--) {
+                const scope = functionScopes[j];
+                debugLog(`[getCurrentFunctionParameterType] Scope ${j}: startLine=${scope.startLine + 1}, endLine=${scope.endLine ? scope.endLine + 1 : 'null'}, firstParamType=${scope.firstParamType || 'null'}`);
+                if (scope.startLine <= lineNum && (!scope.endLine || lineNum <= scope.endLine)) {
+                    debugLog(`[getCurrentFunctionParameterType] Found matching scope, firstParamType=${scope.firstParamType || 'null'}`);
+                    return scope.firstParamType;
+                }
+            }
+            debugLog(`[getCurrentFunctionParameterType] No matching scope found for line ${lineNum + 1}`);
+            return null;
+        };
+        
+        // Second pass: parse function parameters and set OUT variable types
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            // Match function signatures: TypeName funcName(TypeName paramName, ...)
+            if (line.includes('(') && !line.trim().startsWith('//')) {
+                // Match patterns like: VertexShaderOutput IN, uint instanceId : SV_InstanceID
+                const funcParams = line.match(/\b((?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix(?:[1-4]x[1-4])?|Texture\w*|Sampler\w*|[A-Z][A-Za-z0-9_]*))\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:[,:)]|$)/g);
+                if (funcParams) {
+                    for (const param of funcParams) {
+                        const paramMatch = param.match(/\b((?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix(?:[1-4]x[1-4])?|Texture\w*|Sampler\w*|[A-Z][A-Za-z0-9_]*))\s+([A-Za-z_][A-Za-z0-9_]*)/);
+                        if (paramMatch) {
+                            const fullType = paramMatch[1];
+                            const varName = paramMatch[2];
+                            debugLog(`[validateDocument] Found function param: ${varName} : ${fullType} on line ${i+1}`);
+                            if (/^Texture/.test(fullType)) {
+                                variableTypes.set(varName, fullType);
+                                debugLog(`[validateDocument] Set variableTypes[${varName}] = ${fullType} (Texture param)`);
+                            } else if (/^Sampler/.test(fullType)) {
+                                variableTypes.set(varName, fullType);
+                                debugLog(`[validateDocument] Set variableTypes[${varName}] = ${fullType} (Sampler param)`);
+                            } else if (/^(float|int|uint|real|half|double)([2-4])?$/.test(fullType)) {
+                                variableTypes.set(varName, fullType);
+                                debugLog(`[validateDocument] Set variableTypes[${varName}] = ${fullType} (vector/scalar param)`);
+                            } else if (knownStructs.has(fullType) || atomTypes.has(fullType) || pascalCaseTypes.has(fullType) || structIndex.has(fullType) || structMembers.has(fullType)) {
+                                variableTypes.set(varName, fullType);
+                                debugLog(`[validateDocument] Set variableTypes[${varName}] = ${fullType} (struct/type param)`);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Track brace depth for variable declarations
+        let varBraceDepth = 0;
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const openBraces = (line.match(/{/g) || []).length;
+            const closeBraces = (line.match(/}/g) || []).length;
+            varBraceDepth += openBraces - closeBraces;
+            
+            const constVarDeclMatch = line.match(/\bconst\s+((?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix|Texture\w*|Sampler\w*|[A-Z][A-Za-z0-9_]*))\s+([A-Za-z_][A-Za-z0-9_]*)\s*[;=]/);
+            if (constVarDeclMatch) {
+                const fullType = constVarDeclMatch[1];
+                const varName = constVarDeclMatch[2];
+                if (!variableDeclarations.has(varName)) {
+                    variableDeclarations.set(varName, []);
+                }
+                variableDeclarations.get(varName).push({type: fullType, line: i, braceDepth: varBraceDepth});
+                if (/^Texture/.test(fullType)) {
+                    variableTypes.set(varName, fullType);
+                } else if (/^Sampler/.test(fullType)) {
+                    variableTypes.set(varName, fullType);
+                } else if (/^(float|int|uint|real|half|double)([2-4])?$/.test(fullType)) {
+                    variableTypes.set(varName, fullType);
+                } else if (knownStructs.has(fullType) || atomTypes.has(fullType) || pascalCaseTypes.has(fullType) || structIndex.has(fullType) || structMembers.has(fullType)) {
+                    variableTypes.set(varName, fullType);
+                }
+            }
+            const varDeclMatch = line.match(/\b((?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix|Texture\w*|Sampler\w*|[A-Z][A-Za-z0-9_]*))\s+([A-Za-z_][A-Za-z0-9_]*)\s*[;=]/);
+            if (varDeclMatch) {
+                let fullType = varDeclMatch[1];
                 const varName = varDeclMatch[2];
-                if (knownStructs.has(typeName) || atomTypes.has(typeName) || pascalCaseTypes.has(typeName)) {
-                    variableTypes.set(varName, typeName);
+                
+                // Special handling for OUT variable: use function return type
+                if (varName === 'OUT' || varName === 'out') {
+                    const funcReturnType = getCurrentFunctionReturnType(i);
+                    if (funcReturnType) {
+                        fullType = funcReturnType;
+                        debugLog(`[validateDocument] OUT variable at line ${i+1} - using function return type: ${fullType} (was: ${varDeclMatch[1]})`);
+                    } else {
+                        debugLog(`[validateDocument] OUT variable at line ${i+1} - no function return type found, keeping original type: ${fullType}`);
+                    }
+                }
+                
+                // Special handling for IN variable: use function first parameter type
+                if (varName === 'IN' || varName === 'in') {
+                    const funcParamType = getCurrentFunctionParameterType(i);
+                    if (funcParamType) {
+                        fullType = funcParamType;
+                        debugLog(`[validateDocument] IN variable at line ${i+1} - using function first param type: ${fullType} (was: ${varDeclMatch[1]})`);
+                    } else {
+                        debugLog(`[validateDocument] IN variable at line ${i+1} - no function param type found, keeping original type: ${fullType}`);
+                    }
+                }
+                
+                debugLog(`[validateDocument] Found var decl: ${varName} : ${fullType} on line ${i+1}, braceDepth=${varBraceDepth}`);
+                // Store declaration with scope information
+                if (!variableDeclarations.has(varName)) {
+                    variableDeclarations.set(varName, []);
+                }
+                variableDeclarations.get(varName).push({type: fullType, line: i, braceDepth: varBraceDepth});
+                
+                if (/^Texture/.test(fullType)) {
+                    variableTypes.set(varName, fullType);
+                    debugLog(`[validateDocument] Set variableTypes[${varName}] = ${fullType} (Texture)`);
+                } else if (/^Sampler/.test(fullType)) {
+                    variableTypes.set(varName, fullType);
+                    debugLog(`[validateDocument] Set variableTypes[${varName}] = ${fullType} (Sampler)`);
+                } else if (/^(float|int|uint|real|half|double)([2-4])?$/.test(fullType)) {
+                    variableTypes.set(varName, fullType);
+                    debugLog(`[validateDocument] Set variableTypes[${varName}] = ${fullType} (vector/scalar)`);
+                } else if (knownStructs.has(fullType) || atomTypes.has(fullType) || pascalCaseTypes.has(fullType) || structIndex.has(fullType) || structMembers.has(fullType)) {
+                    // Check both structIndex (for indexed structs) and structMembers (for local structs)
+                    variableTypes.set(varName, fullType);
+                    debugLog(`[validateDocument] Set variableTypes[${varName}] = ${fullType} (struct/type) - knownStructs=${knownStructs.has(fullType)}, atomTypes=${atomTypes.has(fullType)}, structIndex=${structIndex.has(fullType)}, structMembers=${structMembers.has(fullType)}`);
+                } else {
+                    debugLog(`[validateDocument] Skipped variableTypes[${varName}] = ${fullType} (unknown type) - knownStructs=${knownStructs.has(fullType)}, atomTypes=${atomTypes.has(fullType)}, structIndex=${structIndex.has(fullType)}, structMembers=${structMembers.has(fullType)}`);
                 }
             }
         }
@@ -1693,8 +3898,18 @@ function activate(context) {
             }
         }
         
+        // Track brace depth during validation
+        let validationBraceDepth = 0;
+        // Track if we're inside a block comment
+        let inBlockComment = false;
+        
         for (let i = 0; i < lines.length; i++) {
             const line = lines[i];
+            
+            // Update brace depth
+            const openBraces = (line.match(/{/g) || []).length;
+            const closeBraces = (line.match(/}/g) || []).length;
+            validationBraceDepth += openBraces - closeBraces;
             
             if (/^\s*\/\//.test(line) || /^\s*#/.test(line)) {
                 continue;
@@ -1713,8 +3928,106 @@ function activate(context) {
             let lineWithoutStrings = line;
             lineWithoutStrings = lineWithoutStrings.replace(/"[^"]*"/g, '""');
             
+            // Track block comment state
+            const blockCommentStart = lineWithoutStrings.indexOf('/*');
+            const blockCommentEnd = lineWithoutStrings.indexOf('*/');
+            
+            // If we find /* on this line
+            if (blockCommentStart >= 0) {
+                // Check if */ is also on this line (after /*)
+                if (blockCommentEnd >= 0 && blockCommentEnd > blockCommentStart) {
+                    // Both markers on same line, comment is closed on this line
+                    inBlockComment = false;
+                } else {
+                    // Only /* found, we're entering a block comment
+                    inBlockComment = true;
+                }
+            } else if (blockCommentEnd >= 0 && inBlockComment) {
+                // We found */ and we were in a block comment, so exit it
+                inBlockComment = false;
+            }
+            
+            // Check if line has comments BEFORE removing them
+            const originalHasComment = /\/\//.test(line) || /\/\*/.test(line) || inBlockComment;
+            
+            // Remove comments BEFORE checking for syntax errors
+            // First remove block comments
             lineWithoutStrings = lineWithoutStrings.replace(/\/\*[\s\S]*?\*\//g, '');
+            // Then remove single-line comments (including //!< style)
             lineWithoutStrings = lineWithoutStrings.replace(/\/\/.*$/g, '');
+            
+            // Check for syntax error: identifier.;
+            // Only check if line is not empty after removing comments
+            const trimmedAfterComments = lineWithoutStrings.trim();
+            if (trimmedAfterComments.length > 0) {
+                // Debug: log when checking for syntax errors
+                const hasDotAtEnd = /\.\s*$/.test(trimmedAfterComments);
+                if (hasDotAtEnd) {
+                    debugLog(`[SYNTAX CHECK] Line ${i + 1}: has dot at end`);
+                    debugLog(`  Original line: "${line}"`);
+                    debugLog(`  Has comment: ${originalHasComment}, inBlockComment: ${inBlockComment}`);
+                    debugLog(`  After removing comments: "${trimmedAfterComments}"`);
+                }
+                
+                // Skip syntax error checks if the original line had a comment or we're inside a block comment
+                // This prevents false positives from comment artifacts
+                if (!originalHasComment && !inBlockComment) {
+                    const syntaxErrorMatch = trimmedAfterComments.match(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*;$/);
+                    if (syntaxErrorMatch) {
+                        debugLog(`[SYNTAX ERROR] Line ${i + 1}: Found identifier.; pattern`);
+                        const varName = syntaxErrorMatch[1];
+                        const pos = lineWithoutStrings.indexOf(varName);
+                        if (pos >= 0) {
+                            const range = new vscode.Range(i, pos, i, pos + varName.length);
+                            diagnostics.push(new vscode.Diagnostic(
+                                range,
+                                `syntax error: incomplete member access`,
+                                vscode.DiagnosticSeverity.Error
+                            ));
+                        }
+                    }
+                    
+                    // Check for syntax error: identifier. (without semicolon, at end of line)
+                    const incompleteAccessMatch = trimmedAfterComments.match(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*$/);
+                    if (incompleteAccessMatch) {
+                        debugLog(`[SYNTAX ERROR] Line ${i + 1}: Found identifier. pattern (no semicolon)`);
+                        debugLog(`  Matched identifier: "${incompleteAccessMatch[1]}"`);
+                        const varName = incompleteAccessMatch[1];
+                        const pos = lineWithoutStrings.indexOf(varName);
+                        if (pos >= 0) {
+                            const range = new vscode.Range(i, pos, i, pos + varName.length);
+                            diagnostics.push(new vscode.Diagnostic(
+                                range,
+                                `syntax error: incomplete member access`,
+                                vscode.DiagnosticSeverity.Error
+                            ));
+                        }
+                    }
+                } else if (hasDotAtEnd) {
+                    debugLog(`[SYNTAX CHECK] Line ${i + 1}: Skipped check because original line has comment or in block comment`);
+                }
+            }
+            
+            // Check for incomplete variable declaration: type without variable name
+            // Match: type at end of line (possibly with whitespace and comment)
+            const incompleteDeclMatch = lineWithoutStrings.match(/^\s*(?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix(?:[1-4]x[1-4])?|[A-Z][A-Za-z0-9_]*)\s*(?:\/\/.*)?$/);
+            if (incompleteDeclMatch) {
+                // Make sure it's not a function declaration or return statement
+                const trimmed = lineWithoutStrings.trim();
+                if (!trimmed.match(/\breturn\s+/) && !trimmed.match(/\([^)]*\)\s*$/) && !trimmed.match(/^\s*\/\//)) {
+                    const typeMatch = trimmed.match(/^(?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix(?:[1-4]x[1-4])?|[A-Z][A-Za-z0-9_]*)/);
+                    if (typeMatch) {
+                        const typeName = typeMatch[0];
+                        const pos = lineWithoutStrings.indexOf(typeName);
+                        const range = new vscode.Range(i, pos, i, pos + typeName.length);
+                        diagnostics.push(new vscode.Diagnostic(
+                            range,
+                            `syntax error: incomplete variable declaration`,
+                            vscode.DiagnosticSeverity.Error
+                        ));
+                    }
+                }
+            }
             
             const identifierRegex = /\b([A-Za-z_][A-Za-z0-9_]*)\b/g;
             let match;
@@ -1738,22 +4051,273 @@ function activate(context) {
                     continue;
                 }
                 
-                if (/\.\s*$/.test(beforeMatch) || /::\s*$/.test(beforeMatch)) {
+                debugLog(`[validateDocument] Checking identifier '${identifier}' on line ${i+1}, col ${pos}`);
+                
+                if (/\./.test(beforeMatch) || /::/.test(beforeMatch)) {
                     const beforeAccess = beforeMatch.trim();
-                    const varMatch = beforeAccess.match(/([A-Za-z_][A-Za-z0-9_]*)\s*[\.:]+\s*$/);
-                    if (varMatch) {
-                        const varName = varMatch[1];
-                        let varType = null;
+                    
+                    // Check if identifier is part of SRG::member pattern (e.g., ViewSrg::m_worldPosition)
+                    const srgBeforeMemberMatch = beforeAccess.match(/([A-Za-z_][A-Za-z0-9_]*)::\s*$/);
+                    if (srgBeforeMemberMatch) {
+                        const srgName = srgBeforeMemberMatch[1];
+                        const fullSrgMember = `${srgName}::${identifier}`;
+                        debugLog(`[validateDocument] Checking SRG member pattern: ${fullSrgMember}`);
                         
-                        if (variableTypes.has(varName)) {
-                            varType = variableTypes.get(varName);
-                        }
-                        else if (atomTypes.has(varName) || pascalCaseTypes.has(varName) || knownStructs.has(varName)) {
-                            varType = varName;
+                        let memberFound = false;
+                        if (declarations.has(fullSrgMember)) {
+                            debugLog(`[validateDocument] Found SRG member in declarations: ${fullSrgMember}`);
+                            memberFound = true;
+                        } else if (srgMembers.has(srgName)) {
+                            const members = srgMembers.get(srgName);
+                            if (members.has(identifier)) {
+                                debugLog(`[validateDocument] Found SRG member in srgMembers: ${fullSrgMember}`);
+                                memberFound = true;
+                            }
+                        } else if (srgMemberIndex.has(fullSrgMember)) {
+                            debugLog(`[validateDocument] Found SRG member in srgMemberIndex: ${fullSrgMember}`);
+                            memberFound = true;
                         }
                         
-                        if (varType && atomTypeMembers.has(varType)) {
-                            if (atomTypeMembers.get(varType).has(identifier)) {
+                        if (memberFound) {
+                            continue;
+                        }
+                        
+                        // If SRG exists but member not found, report error
+                        if (atomTypes.has(srgName) || declarations.has(srgName) || srgMembers.has(srgName)) {
+                            debugLog(`[validateDocument] SRG ${srgName} exists but member ${identifier} not found`);
+                            const range = new vscode.Range(i, pos, i, pos + identifier.length);
+                            diagnostics.push(new vscode.Diagnostic(
+                                range,
+                                `no member named '${identifier}' in SRG '${srgName}'`,
+                                vscode.DiagnosticSeverity.Error
+                            ));
+                            continue;
+                        }
+                    }
+                    
+                    // Find the last member access pattern (closest to the identifier)
+                    const srgMemberMatch = beforeAccess.match(/([A-Za-z_][A-Za-z0-9_]*)::([A-Za-z_][A-Za-z0-9_]*)\s*\.(?![^.]*\.)/);
+                    
+                    // First, check if this is a function call expression (e.g., mul(...).xyz)
+                    const expressionBeforeDot = beforeAccess.substring(0, beforeAccess.lastIndexOf('.'));
+                    let exprType = null;
+                    // Check for function call pattern ending with )
+                    if (expressionBeforeDot.trim().endsWith(')')) {
+                        exprType = getExpressionType(document, expressionBeforeDot, i);
+                        if (exprType) {
+                            debugLog(`[validateDocument] Found expression type: ${exprType} for '${expressionBeforeDot}'`);
+                        }
+                    }
+                    
+                    let varMatch = null;
+                    if (!srgMemberMatch && !exprType) {
+                        // Find the last variable access pattern (closest to the identifier)
+                        const allMatches = [];
+                        let match;
+                        const varPattern = /([A-Za-z_][A-Za-z0-9_]*)\s*\./g;
+                        while ((match = varPattern.exec(beforeAccess)) !== null) {
+                            allMatches.push(match);
+                        }
+                        if (allMatches.length > 0) {
+                            varMatch = allMatches[allMatches.length - 1];
+                        }
+                    }
+                    
+                    let varName = null;
+                    let varType = exprType; // Use expression type if found
+                    
+                    debugLog(`[validateDocument] Member access on line ${i+1}, col ${pos}: beforeAccess="${beforeAccess}", identifier="${identifier}", exprType=${exprType}`);
+                    
+                    if (srgMemberMatch) {
+                        const srgName = srgMemberMatch[1];
+                        const memberName = srgMemberMatch[2];
+                        const fullName = `${srgName}::${memberName}`;
+                        debugLog(`[validateDocument] SRG member access: ${fullName}`);
+                        
+                        // Check if SRG member exists
+                        let memberExists = declarations.has(fullName) || srgMemberIndex.has(fullName);
+                        if (!memberExists && srgMembers.has(srgName)) {
+                            const members = srgMembers.get(srgName);
+                            memberExists = members.has(memberName);
+                        }
+                        
+                        if (!memberExists) {
+                            // SRG exists but member not found - report error
+                            if (atomTypes.has(srgName) || declarations.has(srgName) || srgMembers.has(srgName)) {
+                                debugLog(`[validateDocument] SRG ${srgName} exists but member ${memberName} not found`);
+                                // Find the position of memberName in the line
+                                const memberNamePos = line.indexOf(memberName, pos - 100);
+                                if (memberNamePos >= 0) {
+                                    const range = new vscode.Range(i, memberNamePos, i, memberNamePos + memberName.length);
+                                    diagnostics.push(new vscode.Diagnostic(
+                                        range,
+                                        `no member named '${memberName}' in SRG '${srgName}'`,
+                                        vscode.DiagnosticSeverity.Error
+                                    ));
+                                }
+                                continue;
+                            }
+                        }
+                        
+                        if (variableTypes.has(fullName)) {
+                            varType = variableTypes.get(fullName);
+                            debugLog(`[validateDocument] Found varType for ${fullName}: ${varType}`);
+                        } else {
+                            debugLog(`[validateDocument] No varType found for ${fullName}, checking srgMemberIndex...`);
+                            // Try to find type in srgMemberIndex
+                            if (srgMemberIndex.has(fullName)) {
+                                const memberInfo = srgMemberIndex.get(fullName);
+                                if (memberInfo && memberInfo.type) {
+                                    varType = memberInfo.type;
+                                    debugLog(`[validateDocument] Found varType from srgMemberIndex for ${fullName}: ${varType}`);
+                                }
+                            }
+                            // If still not found, check if it's a known SRG member
+                            if (!varType && srgMembers.has(srgName)) {
+                                const members = srgMembers.get(srgName);
+                                if (members.has(memberName)) {
+                                    // Member exists but type unknown - still need to validate property
+                                    debugLog(`[validateDocument] Member ${fullName} exists but type unknown`);
+                                }
+                            }
+                        }
+                    } else if (varMatch) {
+                        varName = varMatch[1];
+                        debugLog(`[validateDocument] Variable access: ${varName} on line ${i+1}, checking member '${identifier}'`);
+                        
+                        // Check if this is a function call expression (e.g., mul(...))
+                        // First, try to find the full expression before the dot
+                        const expressionBeforeDot = beforeAccess.substring(0, beforeAccess.lastIndexOf('.'));
+                        const exprType = getExpressionType(document, expressionBeforeDot, i);
+                        if (exprType) {
+                            varType = exprType;
+                            debugLog(`[validateDocument] Inferred type from expression '${expressionBeforeDot}': ${varType}`);
+                        } else {
+                            // Try to match function call pattern more carefully
+                            const exprMatch = beforeAccess.match(/([A-Za-z_][A-Za-z0-9_]*)\s*\([^)]*\)\s*\./);
+                            if (exprMatch) {
+                                const funcName = exprMatch[1];
+                                // For mul(), the return type is typically the type of the second argument
+                                if (funcName === 'mul') {
+                                    const mulArgs = extractFunctionCallArgs(expressionBeforeDot, 'mul');
+                                    if (mulArgs && mulArgs.length >= 2) {
+                                        const secondArg = mulArgs[1].trim();
+                                        // Check if second argument is a vector type constructor
+                                        const vectorMatch = secondArg.match(/(float|int|uint|bool|real|half)([2-4])\s*\(/);
+                                        if (vectorMatch) {
+                                            varType = vectorMatch[1] + vectorMatch[2];
+                                            debugLog(`[validateDocument] Inferred type from mul() second arg constructor: ${varType}`);
+                                        } else {
+                                            // Check if it's a variable of vector type
+                                            const varMatch2 = secondArg.match(/^([A-Za-z_][A-Za-z0-9_]*)/);
+                                            if (varMatch2) {
+                                                const argVarType = getVariableTypeAtLine(varMatch2[1], i, validationBraceDepth);
+                                                if (argVarType && isVectorType(argVarType)) {
+                                                    varType = argVarType;
+                                                    debugLog(`[validateDocument] Inferred type from mul() second arg variable: ${varType}`);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // Special handling for OUT variable: use function return type from current context
+                        if (!varType && (varName === 'OUT' || varName === 'out')) {
+                            const funcReturnType = getCurrentFunctionReturnType(i);
+                            if (funcReturnType) {
+                                varType = funcReturnType;
+                                debugLog(`[validateDocument] OUT variable at line ${i+1} - using function return type: ${varType}`);
+                            }
+                        }
+                        
+                        // Special handling for IN variable: use function first parameter type from current context
+                        if (!varType && (varName === 'IN' || varName === 'in')) {
+                            const funcParamType = getCurrentFunctionParameterType(i);
+                            if (funcParamType) {
+                                varType = funcParamType;
+                                debugLog(`[validateDocument] IN variable at line ${i+1} - using function first param type: ${varType}`);
+                            }
+                        }
+                        
+                        if (!varType) {
+                            // Try to get variable type considering scope
+                            varType = getVariableTypeAtLine(varName, i, validationBraceDepth);
+                            if (varType) {
+                                debugLog(`[validateDocument] Found varType for ${varName} using getVariableTypeAtLine: ${varType}`);
+                            }
+                        }
+                        if (!varType) {
+                            debugLog(`[validateDocument] ${varName} not in variableTypes, checking SRG members...`);
+                            for (const [srgName, members] of srgMembers.entries()) {
+                                if (members.has(varName)) {
+                                    const fullName = `${srgName}::${varName}`;
+                                    if (variableTypes.has(fullName)) {
+                                        varType = variableTypes.get(fullName);
+                                        debugLog(`[validateDocument] Found varType for ${fullName}: ${varType}`);
+                                        break;
+                                    }
+                                }
+                            }
+                            if (!varType && (atomTypes.has(varName) || pascalCaseTypes.has(varName) || knownStructs.has(varName) || structIndex.has(varName))) {
+                                varType = varName;
+                                debugLog(`[validateDocument] Using varName as varType: ${varType} (found in atomTypes/pascalCaseTypes/knownStructs/structIndex)`);
+                            }
+                            if (!varType) {
+                                debugLog(`[validateDocument] No varType found for ${varName} - atomTypes.has=${atomTypes.has(varName)}, structIndex.has=${structIndex.has(varName)}, structMembers.has=${structMembers.has(varName)}`);
+                            }
+                        }
+                    }
+                    
+                    // If srgMemberMatch found but varType unknown, check if property is valid swizzle
+                    if (srgMemberMatch && !varType) {
+                        const srgName = srgMemberMatch[1];
+                        const memberName = srgMemberMatch[2];
+                        const fullName = `${srgName}::${memberName}`;
+                        let memberExists = declarations.has(fullName) || srgMemberIndex.has(fullName);
+                        if (!memberExists && srgMembers.has(srgName)) {
+                            const members = srgMembers.get(srgName);
+                            memberExists = members.has(memberName);
+                        }
+                        if (memberExists) {
+                            // Member exists but type unknown - check if property is valid swizzle
+                            const isValidSwizzle = /^[xyzwrgba]{1,4}$/.test(identifier);
+                            debugLog(`[validateDocument] SRG member ${fullName} exists but type unknown, checking swizzle: identifier='${identifier}', isValidSwizzle=${isValidSwizzle}`);
+                            if (!isValidSwizzle) {
+                                // Invalid swizzle property - report error
+                                const range = new vscode.Range(i, pos, i, pos + identifier.length);
+                                diagnostics.push(new vscode.Diagnostic(
+                                    range,
+                                    `invalid swizzle property '${identifier}'`,
+                                    vscode.DiagnosticSeverity.Error
+                                ));
+                                continue;
+                            } else {
+                                // Valid swizzle, skip
+                                continue;
+                            }
+                        }
+                    }
+                    
+                    if (varType) {
+                        debugLog(`[validateDocument] Checking member '${identifier}' of type '${varType}' on line ${i+1}`);
+                        // Check for vector type swizzle properties first (x, y, z, w, r, g, b, a and combinations)
+                        if (isVectorType(varType)) {
+                            const isValidSwizzle = /^[xyzwrgba]{1,4}$/.test(identifier);
+                            debugLog(`[validateDocument] isValidSwizzle test: identifier='${identifier}', result=${isValidSwizzle}`);
+                            if (isValidSwizzle) {
+                                debugLog(`[validateDocument] Valid swizzle for vector type ${varType}, skipping error`);
+                                continue;
+                            }
+                        }
+                        
+                        debugLog(`[validateDocument] Checking atomTypeMembers for '${varType}': has=${atomTypeMembers.has(varType)}`);
+                        if (atomTypeMembers.has(varType)) {
+                            const members = atomTypeMembers.get(varType);
+                            debugLog(`[validateDocument] atomTypeMembers['${varType}'] has '${identifier}': ${members.has(identifier)}`);
+                            if (members.has(identifier)) {
+                                debugLog(`[validateDocument] Found member '${identifier}' in atomTypeMembers['${varType}']`);
                                 continue;
                             }
                             const range = new vscode.Range(i, pos, i, pos + identifier.length);
@@ -1764,8 +4328,78 @@ function activate(context) {
                             ));
                             continue;
                         }
+                        // Check if varType is a struct and validate struct members
+                        // Check atomTypeMembers first (for types like ForwardPassOutput), then structMembers
+                        debugLog(`[validateDocument] Checking structMembers/structIndex/atomTypes for '${varType}': structIndex.has=${structIndex.has(varType)}, structMembers.has=${structMembers.has(varType)}, atomTypes.has=${atomTypes.has(varType)}`);
+                        if (structIndex.has(varType) || structMembers.has(varType) || atomTypes.has(varType)) {
+                            // Check structMembers (works for both indexed and local structs)
+                            // Also check atomTypes (like DirectionalLight) which may have members in structMembers
+                            if (structMembers.has(varType)) {
+                                const members = structMembers.get(varType);
+                                debugLog(`[validateDocument] structMembers['${varType}'] has ${members.size} members: ${Array.from(members).join(', ')}`);
+                                debugLog(`[validateDocument] structMembers['${varType}'] has '${identifier}': ${members.has(identifier)}`);
+                                if (members.has(identifier)) {
+                                    debugLog(`[validateDocument] Found member '${identifier}' in structMembers['${varType}']`);
+                                    continue;
+                                }
+                                // Member not found - report error
+                                debugLog(`[validateDocument] Member '${identifier}' NOT found in structMembers['${varType}']`);
+                                const range = new vscode.Range(i, pos, i, pos + identifier.length);
+                                diagnostics.push(new vscode.Diagnostic(
+                                    range,
+                                    `no member named '${identifier}' in struct '${varType}'`,
+                                    vscode.DiagnosticSeverity.Error
+                                ));
+                                continue;
+                            } else if (atomTypes.has(varType)) {
+                                // Type is in atomTypes but no members found in structMembers
+                                debugLog(`[validateDocument] Type '${varType}' is in atomTypes but NOT in structMembers - this may indicate indexing issue`);
+                                const range = new vscode.Range(i, pos, i, pos + identifier.length);
+                                diagnostics.push(new vscode.Diagnostic(
+                                    range,
+                                    `no member named '${identifier}' in struct '${varType}' (type found but members not indexed)`,
+                                    vscode.DiagnosticSeverity.Error
+                                ));
+                                continue;
+                            }
+                        }
+                        if (srgMembers.has(varType)) {
+                            if (srgMembers.get(varType).has(identifier)) {
+                                continue;
+                            }
+                            const range = new vscode.Range(i, pos, i, pos + identifier.length);
+                            diagnostics.push(new vscode.Diagnostic(
+                                range,
+                                `no member named '${identifier}' in type '${varType}'`,
+                                vscode.DiagnosticSeverity.Error
+                            ));
+                            continue;
+                        }
+                        
+                        const textureMethods = new Set(['Sample', 'SampleLevel', 'SampleBias', 'SampleGrad', 'SampleCmp', 'SampleCmpLevelZero', 'Load', 'GetDimensions', 'Gather', 'GatherRed', 'GatherGreen', 'GatherBlue', 'GatherAlpha', 'GatherCmp', 'GatherCmpRed']);
+                        if (/^Texture/.test(varType)) {
+                            if (!textureMethods.has(identifier)) {
+                                const range = new vscode.Range(i, pos, i, pos + identifier.length);
+                                diagnostics.push(new vscode.Diagnostic(
+                                    range,
+                                    `no member named '${identifier}' in type '${varType}'. Valid methods: ${Array.from(textureMethods).join(', ')}`,
+                                    vscode.DiagnosticSeverity.Error
+                                ));
+                                continue;
+                            }
+                        }
+                        // If we found varType and processed it, skip further checks
                         continue;
                     }
+                    // If we have . or :: but no varType found, and we have varMatch/srgMemberMatch,
+                    // it means we tried to process member access but couldn't find type
+                    // Skip to avoid false positives (e.g., SRG members not indexed)
+                    if (srgMemberMatch || varMatch) {
+                        debugLog(`[validateDocument] Skipping '${identifier}' on line ${i+1}: member access attempted but no type found`);
+                        continue;
+                    }
+                    // If we have . or :: but no varMatch/srgMemberMatch, it's not a member access
+                    // Continue to check as undeclared identifier
                 }
                 
                 if (/^[A-Z]/.test(identifier) && (pascalCaseTypes.has(identifier) || atomTypes.has(identifier))) {
@@ -1800,6 +4434,12 @@ function activate(context) {
                     }
                     if (atomTypes.has(srgMemberMatch[1]) || declarations.has(srgMemberMatch[1])) {
                         continue;
+                    }
+                    if (srgMembers.has(srgMemberMatch[1])) {
+                        const members = srgMembers.get(srgMemberMatch[1]);
+                        if (members.has(identifier)) {
+                            continue;
+                        }
                     }
                 }
                 
@@ -1854,17 +4494,18 @@ function activate(context) {
                                followedByBracket || followedByComma || followedByClosing;
                 
                 if (!isUsage) {
+                    debugLog(`[validateDocument] Skipping '${identifier}' on line ${i+1}: not a usage (isUsage=false)`);
                     continue;
                 }
                 
                 if (/^[a-z_]/.test(identifier)) {
+                    debugLog(`[validateDocument] Reporting undeclared identifier '${identifier}' on line ${i+1}, col ${pos}`);
                     const range = new vscode.Range(i, pos, i, pos + identifier.length);
                     diagnostics.push(new vscode.Diagnostic(
                         range,
                         `use of undeclared identifier '${identifier}'`,
                         vscode.DiagnosticSeverity.Error
                     ));
-                } else if (identifier === 'undefinedVar') {
                 }
             }
             
@@ -1872,7 +4513,19 @@ function activate(context) {
         
         for (let i = 0; i < lines.length; i++) {
             const line = lines[i];
-            const trimmedLine = line.trim();
+            
+            if (/^\s*\/\//.test(line) || /^\s*#/.test(line)) {
+                continue;
+            }
+            
+            let lineWithoutComments = line;
+            lineWithoutComments = lineWithoutComments.replace(/\/\*[\s\S]*?\*\//g, '');
+            const commentIndex = lineWithoutComments.indexOf('//');
+            if (commentIndex !== -1) {
+                lineWithoutComments = lineWithoutComments.substring(0, commentIndex);
+            }
+            
+            const trimmedLine = lineWithoutComments.trim();
             
             const incompleteDotMatch = trimmedLine.match(/([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*$/);
             if (incompleteDotMatch) {
@@ -1924,6 +4577,42 @@ function activate(context) {
                         vscode.DiagnosticSeverity.Error
                     ));
                 }
+            }
+            
+            const dotSemicolonRegex = /\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*;/g;
+            let match;
+            while ((match = dotSemicolonRegex.exec(lineWithoutComments)) !== null) {
+                const dotPos = match.index + match[1].length;
+                const semicolonPos = lineWithoutComments.indexOf(';', dotPos);
+                const range = new vscode.Range(i, dotPos, i, semicolonPos + 1);
+                diagnostics.push(new vscode.Diagnostic(
+                    range,
+                    `syntax error: unexpected ';' after '.'`,
+                    vscode.DiagnosticSeverity.Error
+                ));
+            }
+            
+            const doubleDotRegex = /\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*\./g;
+            while ((match = doubleDotRegex.exec(lineWithoutComments)) !== null) {
+                const firstDotPos = match.index + match[1].length;
+                const range = new vscode.Range(i, firstDotPos, i, firstDotPos + 2);
+                diagnostics.push(new vscode.Diagnostic(
+                    range,
+                    `syntax error: unexpected '.' after '.'`,
+                    vscode.DiagnosticSeverity.Error
+                ));
+            }
+            
+            const colonSemicolonRegex = /\b([A-Za-z_][A-Za-z0-9_]*)\s*::\s*;/g;
+            while ((match = colonSemicolonRegex.exec(lineWithoutComments)) !== null) {
+                const colonPos = match.index + match[1].length;
+                const semicolonPos = lineWithoutComments.indexOf(';', colonPos);
+                const range = new vscode.Range(i, colonPos, i, semicolonPos + 1);
+                diagnostics.push(new vscode.Diagnostic(
+                    range,
+                    `syntax error: unexpected ';' after '::'`,
+                    vscode.DiagnosticSeverity.Error
+                ));
             }
         }
         

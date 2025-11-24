@@ -55,7 +55,8 @@
         ],
         "extensions": [
           ".azsl",
-          ".azsli"
+          ".azsli",
+          ".srgi"
         ],
         "configuration": "./language-configuration.json"
       }
