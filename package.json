@@ -1,0 +1,112 @@
+{
+  "name": "azsl-basic",
+  "displayName": "AZSL Basic",
+  "description": "Minimal syntax highlighting and language configuration for AZSL (O3DE/Atom).",
+  "publisher": "Atmosaero",
+  "version": "0.0.2",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Atmosaero/vscode-azsl-basic.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Atmosaero/vscode-azsl-basic/issues"
+  },
+  "homepage": "https://github.com/Atmosaero/vscode-azsl-basic#readme",
+  "icon": "icon.png",
+  "engines": {
+    "vscode": "^1.70.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "main": "./dist/extension.js",
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -p . -w",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.70.0",
+    "typescript": "^5.0.0"
+  },
+  "activationEvents": [
+    "onLanguage:azsl",
+    "workspaceContains:**/*.azsl",
+    "workspaceContains:**/*.azsli",
+    "workspaceContains:**/*.srgi",
+    "onCommand:azsl.reindex",
+    "onCommand:azsl.setGemPath"
+  ],
+  "contributes": {
+    "configuration": {
+      "title": "AZSL",
+      "properties": {
+        "azsl.gemPath": {
+          "type": "string",
+          "default": "D:\\O3DE\\Gems\\Atom",
+          "description": "Path to Atom Gem directory (e.g. D:\\O3DE\\Gems\\Atom).",
+          "scope": "window"
+        },
+        "azsl.debug.showOutputOnActivate": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show the AZSL Debug output channel when the extension activates.",
+          "scope": "window"
+        },
+        "azsl.debug.logToConsole": {
+          "type": "boolean",
+          "default": false,
+          "description": "Also write AZSL debug logs to the VS Code developer console.",
+          "scope": "window"
+        },
+        "azsl.debug.traceCodeActions": {
+          "type": "boolean",
+          "default": false,
+          "description": "Verbose tracing for Code Actions provider. Can produce a lot of output.",
+          "scope": "window"
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "azsl.reindex",
+        "title": "AZSL: Reindex Atom Headers"
+      },
+      {
+        "command": "azsl.setGemPath",
+        "title": "AZSL: Set Gem Path"
+      }
+    ],
+    "languages": [
+      {
+        "id": "azsl",
+        "aliases": [
+          "AZSL",
+          "azsl"
+        ],
+        "extensions": [
+          ".azsl",
+          ".azsli",
+          ".srgi"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "azsl",
+        "path": "./snippets/azsl.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "azsl",
+        "scopeName": "source.azsl",
+        "path": "./syntaxes/azsl.tmLanguage.json"
+      }
+    ]
+  }
+}
+

@@ -1,0 +1,207 @@
+{
+	"ShaderResourceGroup": {
+		"prefix": "srg",
+		"body": [
+			"ShaderResourceGroup ${1:MySrg} : ${2:SRG_PerMaterial}",
+			"{",
+			"\t${0:// resources...}",
+			"};"
+		],
+		"description": "Create AZSL ShaderResourceGroup"
+	},
+	"Texture2D + Sampler": {
+		"prefix": "tex2d",
+		"body": [
+			"Texture2D ${1:AlbedoTexture};",
+			"SamplerState ${2:LinearSampler};"
+		],
+		"description": "Texture2D with SamplerState"
+	},
+	"cbuffer": {
+		"prefix": "cbuffer",
+		"body": [
+			"cbuffer ${1:PerObject}",
+			"{",
+			"\tfloat4 ${2:Color} = float4(1,1,1,1);",
+			"};"
+		],
+		"description": "Constant buffer"
+	},
+	"Entry function (pixel)": {
+		"prefix": "ps",
+		"body": [
+			"float4 ${1:MainPS}(${2:VSOut} input) : SV_Target",
+			"{",
+			"\t${0:return float4(1,1,1,1);}",
+			"}"
+		],
+		"description": "Simple pixel shader entry"
+	},
+	"Entry function (vertex)": {
+		"prefix": "vs",
+		"body": [
+			"${1:VSOut} ${2:MainVS}(${3:VSIn} input)",
+			"{",
+			"\t${0:VSOut o; return o;}",
+			"}"
+		],
+		"description": "Simple vertex shader entry"
+	},
+	"Texture2D + Sampler + [[binding]]": {
+		"prefix": "tex2db",
+		"body": [
+			"[[binding(${1:0})]] Texture2D ${2:AlbedoTexture};",
+			"[[binding(${3:1})]] SamplerState ${4:LinearSampler};"
+		],
+		"description": "Texture2D and Sampler with binding attributes"
+	},
+	"TextureCube": {
+		"prefix": "texcube",
+		"body": [
+			"[[binding(${1:0})]] TextureCube ${2:EnvTexture};"
+		],
+		"description": "TextureCube with binding"
+	},
+	"RWTexture2D": {
+		"prefix": "rwtex2d",
+		"body": [
+			"[[binding(${1:0})]] RWTexture2D<float4> ${2:OutputTex};"
+		],
+        "description": "RWTexture2D resource"
+	},
+	"StructuredBuffer": {
+		"prefix": "sbuf",
+		"body": [
+			"[[binding(${1:0})]] StructuredBuffer<${2:float4}> ${3:InputBuffer};"
+		],
+		"description": "StructuredBuffer with binding"
+	},
+	"RWStructuredBuffer": {
+		"prefix": "rwsbuf",
+		"body": [
+			"[[binding(${1:0})]] RWStructuredBuffer<${2:float4}> ${3:OutputBuffer};"
+		],
+		"description": "RWStructuredBuffer with binding"
+	},
+	"SamplerComparisonState": {
+		"prefix": "samplerCmp",
+		"body": [
+			"[[binding(${1:0})]] SamplerComparisonState ${2:ShadowSampler};"
+		],
+		"description": "SamplerComparisonState with binding"
+	},
+	"numthreads attribute": {
+		"prefix": "numthreads",
+		"body": [
+			"[numthreads(${1:8}, ${2:8}, ${3:1})]"
+		],
+		"description": "Compute shader thread group size"
+	},
+	"Entry function (compute)": {
+		"prefix": "cs",
+		"body": [
+			"[numthreads(${1:8}, ${2:8}, ${3:1})]",
+			"void ${4:MainCS}(uint3 DTid : SV_DispatchThreadID)",
+			"{",
+			"\t${0:}",
+			"}"
+		],
+		"description": "Compute shader entry"
+	},
+	"groupshared": {
+		"prefix": "groupshared",
+		"body": [
+			"groupshared ${1:float4} ${2:SharedData}[${3:64}];"
+		],
+		"description": "Group shared memory declaration"
+	},
+	"struct VSIn/VOut": {
+		"prefix": "vstructs",
+		"body": [
+			"struct ${1:VSIn} {",
+			"\tfloat3 Position : POSITION;",
+			"\tfloat3 Normal : NORMAL;",
+			"\tfloat2 TexCoord : TEXCOORD0;",
+			"};",
+			"struct ${2:VSOut} {",
+			"\tfloat4 PositionH : SV_Position;",
+			"\tfloat2 TexCoord : TEXCOORD0;",
+			"};"
+		],
+		"description": "Vertex shader I/O structs"
+	},
+	"Semantics SV_Position": {
+		"prefix": "svpos",
+		"body": [
+			": SV_Position"
+		],
+		"description": "SV_Position semantic"
+	},
+	"Semantics SV_Target": {
+		"prefix": "svt",
+		"body": [
+			": SV_Target"
+		],
+		"description": "SV_Target semantic"
+	},
+	"Semantics TEXCOORDn": {
+		"prefix": "texcoord",
+		"body": [
+			": TEXCOORD${1:0}"
+		],
+		"description": "TEXCOORDn semantic"
+	},
+	"Semantics COLORn": {
+		"prefix": "colorsem",
+		"body": [
+			": COLOR${1:0}"
+		],
+		"description": "COLORn semantic"
+	},
+	"float2/3/4": {
+		"prefix": "fvec",
+		"body": [
+			"float${1|2,3,4|} ${2:name};"
+		],
+		"description": "Vector type helper"
+	},
+	"float4x4": {
+		"prefix": "f44",
+		"body": [
+			"float4x4 ${1:M};"
+		],
+		"description": "Matrix type helper"
+	},
+	"#include": {
+		"prefix": "inc",
+		"body": [
+			"#include \"${1:path.azsli}\""
+		],
+		"description": "Include file"
+	},
+	"#define": {
+		"prefix": "def",
+		"body": [
+			"#define ${1:NAME} ${2:value}"
+		],
+		"description": "Preprocessor define"
+	},
+	"#if / #endif": {
+		"prefix": "ifdef",
+		"body": [
+			"#if ${1:COND}",
+			"${0:// code}",
+			"#endif"
+		],
+		"description": "Preprocessor conditional"
+	},
+	"Attribute [[binding]]": {
+		"prefix": "binding",
+		"body": [
+			"[[binding(${1:0})]]"
+		],
+		"description": "AZSL attribute [[binding(N)]]"
+	}
+}
+
+
