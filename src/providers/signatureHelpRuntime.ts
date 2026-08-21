@@ -136,6 +136,12 @@ const intrinsics: SigMap = {
   ],
   ddy: [
     { label: 'ddy(x)', documentation: 'Derivative in screen-space y direction.', parameters: [{ label: 'x' }] }
+  ],
+  fwidth: [
+    { label: 'fwidth(x)', documentation: 'Returns abs(ddx(x)) + abs(ddy(x)).', parameters: [{ label: 'x' }] }
+  ],
+  clip: [
+    { label: 'clip(x)', documentation: 'Discards the current pixel when any component is negative.', parameters: [{ label: 'x' }] }
   ]
 };
 

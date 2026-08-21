@@ -1,0 +1,6 @@
+#define ADD_VALUES(lhs, rhs) ((lhs) + (rhs))
+float4 MainPS() : SV_Target0
+{
+    float value = ADD_VALUES(1.0); // AZERR39: too few macro arguments
+    return float4(value, 0.0, 0.0, 1.0);
+}

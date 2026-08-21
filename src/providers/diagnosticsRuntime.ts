@@ -1,11 +1,27 @@
+import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 
 import * as includes from '../includes';
-import { atomTypeMembers, headersPathIndex, indexedSymbols, macroIndex, optionIndex, srgMembers, srgMemberIndex, srgSemanticIndex, structIndex, structMembers } from '../indexer/state';
+import { atomTypeMembers, functionIndex, headersPathIndex, indexedSymbols, macroIndex, srgMembers, srgMemberIndex, srgSemanticIndex, structIndex, structMembers } from '../indexer/state';
 import { debugLog } from '../logger';
 import { extractStructDeclarations } from '../indexer/parsers/structs';
+import { extractOptionDeclarations } from '../indexer/parsers/options';
 import { resolveIncludeTarget } from './includesRuntime';
+import { extractDiagnosticDeclarations } from './diagnostics/declarations';
+import { collectStructuralSyntaxIssues } from './diagnostics/structuralSyntax';
+import { extractFunctionCallArgs, getSwizzleProperties, inferExpressionType, isVectorType } from './diagnostics/expressionTypes';
+import { analyzeFunctionScopes, findFunctionScope } from './diagnostics/functionScopes';
+import { collectFunctionCallIssues } from './diagnostics/functionCalls';
+import { scanLexicalLines } from './diagnostics/lexicalLines';
+import { collectMemberAccessIssues } from './diagnostics/memberAccess';
+import { collectSourceSyntaxIssues } from './diagnostics/sourceSyntax';
+import {
+  builtinIdentifiers,
+  samplerPropertyEnumValues,
+  samplerPropertyNames,
+  samplerPropertyNumericKind
+} from './diagnostics/languageFacts';
 
 function clampPosition(document: vscode.TextDocument, pos: vscode.Position): vscode.Position {
   const line = Math.max(0, Math.min(pos.line, Math.max(0, document.lineCount - 1)));
@@ -45,421 +61,34 @@ function safeSetDiagnostics(
   }
 }
 
-const builtinIdentifiers = new Set([
-  'max', 'min', 'saturate', 'clamp', 'smoothstep', 'normalize', 'length', 'dot', 'cross',
-  'pow', 'floor', 'ceil', 'frac', 'lerp', 'step', 'ddx', 'ddy', 'abs', 'mul', 'round',
-  'sin', 'cos', 'sqrt', 'fmod',
-  'clip', 'ddx_fine', 'ddy_fine', 'rcp', 'exp', 'transpose',
-  'branch',
-  'numthreads',
-  'Sample', 'SampleCmp', 'GetDimensions',
-  'float', 'float2', 'float3', 'float4', 'float2x2', 'float3x3', 'float4x4',
-  'real', 'real2', 'real3', 'real4', 'real3x3', 'real3x4', 'real4x4',
-  'int', 'int2', 'int3', 'int4', 'uint', 'uint2', 'uint3', 'uint4', 'bool',
-  'half', 'double', 'matrix', 'void',
-  'Texture2D', 'Texture3D', 'TextureCube', 'Texture2DArray', 'RWTexture2D',
-  'Sampler', 'SamplerState', 'SamplerComparisonState',
-  'if', 'else', 'for', 'while', 'do', 'switch', 'case', 'default', 'break', 'continue', 'return',
-  'true', 'false',
-  'struct', 'cbuffer', 'tbuffer', 'namespace', 'class', 'static', 'const', 'groupshared',
-  'uniform', 'volatile', 'option', 'noperspective', 'inline',
-  'POSITION', 'NORMAL', 'TEXCOORD0', 'TEXCOORD1', 'TEXCOORD2', 'TEXCOORD3', 'TEXCOORD4', 'TEXCOORD5', 'TEXCOORD6',
-  'UV0', 'UV1', 'UV2', 'UV3',
-  'SV_Position', 'SV_Target', 'SV_Target0', 'SV_InstanceID', 'SV_VertexID',
-  'COLOR0', 'COLOR1', 'TANGENT', 'BINORMAL'
-]);
-
-const samplerPropertyNames = new Set([
-  'MinFilter',
-  'MagFilter',
-  'MipFilter',
-  'AddressU',
-  'AddressV',
-  'AddressW',
-  'MaxAnisotropy',
-  'ReductionType',
-  'ComparisonFunc',
-  'MinLOD',
-  'MaxLOD',
-  'MipLODBias',
-  'BorderColor'
-]);
-
-const samplerPropertyEnumValues: Record<string, string[]> = {
-  MinFilter: ['Point', 'Linear'],
-  MagFilter: ['Point', 'Linear'],
-  MipFilter: ['Point', 'Linear'],
-  AddressU: ['Wrap', 'Mirror', 'Clamp', 'Border', 'MirrorOnce'],
-  AddressV: ['Wrap', 'Mirror', 'Clamp', 'Border', 'MirrorOnce'],
-  AddressW: ['Wrap', 'Mirror', 'Clamp', 'Border', 'MirrorOnce'],
-  ReductionType: ['Filter', 'Comparison', 'Minimum', 'Maximum'],
-  ComparisonFunc: ['Never', 'Less', 'Equal', 'LessEqual', 'Greater', 'NotEqual', 'GreaterEqual', 'Always'],
-  BorderColor: ['OpaqueBlack', 'TransparentBlack', 'OpaqueWhite']
-};
-
-const samplerPropertyNumericKind: Record<string, 'int' | 'float'> = {
-  MaxAnisotropy: 'int',
-  MinLOD: 'float',
-  MaxLOD: 'float',
-  MipLODBias: 'float'
-};
-
-type ExtractedDecls = {
-  declarations: Set<string>;
-  knownStructs: Set<string>;
-  classMembers: Map<string, Set<string>>;
-  variableTypes: Map<string, string>;
-};
-
-function isVectorType(type: string | null | undefined): boolean {
-  if (!type) return false;
-  return /^(float|int|uint|bool|real|half)[2-4]$/.test(type);
-}
-
-function getSwizzleProperties(type: string): string[] {
-  const props = new Set<string>();
-  const dimMatch = type.match(/(\d)$/);
-  if (!dimMatch) return [];
-  const dim = parseInt(dimMatch[1]!, 10);
-  const components = ['x', 'y', 'z', 'w'];
-  const colorComponents = ['r', 'g', 'b', 'a'];
-
-  for (let i = 0; i < dim; i++) {
-    props.add(components[i]!);
-    props.add(colorComponents[i]!);
-  }
-
-  for (let i = 0; i < dim; i++) {
-    for (let j = 0; j < dim; j++) {
-      if (i !== j) {
-        props.add(components[i]! + components[j]!);
-        props.add(colorComponents[i]! + colorComponents[j]!);
-      }
-    }
-  }
-
-  if (dim >= 3) {
-    for (let i = 0; i < dim; i++) {
-      for (let j = 0; j < dim; j++) {
-        for (let k = 0; k < dim; k++) {
-          if (i !== j && j !== k && i !== k) {
-            props.add(components[i]! + components[j]! + components[k]!);
-            props.add(colorComponents[i]! + colorComponents[j]! + colorComponents[k]!);
-          }
-        }
-      }
-    }
-  }
-
-  if (dim === 4) {
-    for (let i = 0; i < dim; i++) {
-      for (let j = 0; j < dim; j++) {
-        for (let k = 0; k < dim; k++) {
-          for (let l = 0; l < dim; l++) {
-            if (i !== j && j !== k && k !== l && i !== k && i !== l && j !== l) {
-              props.add(components[i]! + components[j]! + components[k]! + components[l]!);
-              props.add(colorComponents[i]! + colorComponents[j]! + colorComponents[k]! + colorComponents[l]!);
-            }
-          }
-        }
-      }
-    }
-  }
-
-  return Array.from(props).sort();
-}
-
-function extractFunctionCallArgs(text: string, funcName: string): string[] | null {
-  const funcPattern = new RegExp(`\\b${funcName}\\s*\\(`, 'g');
+function collectIncludedSources(text: string, documentDir: string, depth = 0, visited = new Set<string>()): string[] {
+  if (depth >= 16) return [];
+  const result: string[] = [];
+  const includePattern = /^\s*#\s*include\s*[<"]([^>"]+)[>"]/gm;
   let match: RegExpExecArray | null;
-  let lastMatch: RegExpExecArray | null = null;
-  while ((match = funcPattern.exec(text)) !== null) {
-    lastMatch = match;
-  }
-  if (!lastMatch) return null;
-
-  const startPos = lastMatch.index + lastMatch[0]!.length;
-  let depth = 1;
-  let pos = startPos;
-  let argStart = startPos;
-  const args: string[] = [];
-
-  while (pos < text.length && depth > 0) {
-    if (text[pos] === '(') depth++;
-    else if (text[pos] === ')') depth--;
-    else if (text[pos] === ',' && depth === 1) {
-      args.push(text.substring(argStart, pos).trim());
-      argStart = pos + 1;
+  while ((match = includePattern.exec(text)) !== null) {
+    const includePath = match[1]!;
+    let target = resolveIncludeTarget(includePath);
+    try {
+      target = includes.resolveIncludeWithFallback(includePath, target, documentDir, vscode.workspace.workspaceFolders);
+    } catch {
+      continue;
     }
-    pos++;
+    const targetPath = target?.fsPath;
+    if (!targetPath || visited.has(targetPath) || !fs.existsSync(targetPath)) continue;
+    visited.add(targetPath);
+    try {
+      const includedText = fs.readFileSync(targetPath, 'utf8');
+      result.push(includedText);
+      result.push(...collectIncludedSources(includedText, path.dirname(targetPath), depth + 1, visited));
+    } catch {
+      // Include diagnostics below will report unreadable files through the
+      // normal resolution path; semantic checks simply remain conservative.
+    }
   }
-
-  if (depth === 0) {
-    args.push(text.substring(argStart, pos - 1).trim());
-    return args;
-  }
-
-  return null;
+  return result;
 }
 
-function getExpressionType(document: vscode.TextDocument, expression: string, lineNum: number, getVariableTypeAtLine: (varName: string) => string | null): string | null {
-  if (!expression) return null;
-  const trimmedExpr = expression.trim();
-  const mulMatch = trimmedExpr.match(/\bmul\s*\(/);
-  if (mulMatch) {
-    debugLog(`[getExpressionType] Found mul() in expression: '${trimmedExpr}'`);
-    const args = extractFunctionCallArgs(trimmedExpr, 'mul');
-    debugLog(`[getExpressionType] Extracted args: ${args ? JSON.stringify(args) : 'null'}`);
-    if (args && args.length >= 2) {
-      const secondArg = args[1]!.trim();
-      debugLog(`[getExpressionType] Second arg: '${secondArg}'`);
-      const vectorMatch = secondArg.match(/(float|int|uint|bool|real|half)([2-4])\s*\(/);
-      if (vectorMatch) {
-        const resultType = vectorMatch[1]! + vectorMatch[2]!;
-        debugLog(`[getExpressionType] mul() with vector constructor: ${resultType}`);
-        return resultType;
-      }
-      const varMatch = secondArg.match(/^([A-Za-z_][A-Za-z0-9_]*)/);
-      if (varMatch) {
-        const varType = getVariableTypeAtLine(varMatch[1]!);
-        if (varType && isVectorType(varType)) {
-          debugLog(`[getExpressionType] mul() with vector variable: ${varType}`);
-          return varType;
-        }
-      }
-      const memberMatch = secondArg.match(/([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)/);
-      if (memberMatch) {
-        const varName = memberMatch[1]!;
-        const memberName = memberMatch[2]!;
-        const varType = getVariableTypeAtLine(varName);
-        if (varType && structMembers.has(varType)) {
-          debugLog(`[getExpressionType] mul() with member access: ${varName}.${memberName}, varType=${varType}`);
-        }
-      }
-    }
-  }
-  const vectorConstructorMatch = trimmedExpr.match(/(float|int|uint|bool|real|half)([2-4])\s*\(/);
-  if (vectorConstructorMatch) {
-    const resultType = vectorConstructorMatch[1]! + vectorConstructorMatch[2]!;
-    debugLog(`[getExpressionType] Vector constructor: ${resultType}`);
-    return resultType;
-  }
-  return null;
-}
-
-function extractDeclarations(text: string): ExtractedDecls {
-  const declarations = new Set<string>();
-  const lines = text.split(/\r?\n/);
-  const knownStructs = new Set<string>();
-  const variableTypes = new Map<string, string>();
-
-  for (const line of lines) {
-    const structMatch = line.match(/\bstruct\s+([A-Za-z_][A-Za-z0-9_]*)\b/);
-    if (structMatch) {
-      declarations.add(structMatch[1]!);
-      knownStructs.add(structMatch[1]!);
-    }
-
-    const patterns = [
-      /\bconst\s+(?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix|Texture\w*|Sampler(?:State|ComparisonState|\w*)?|[A-Z][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\]]*\]\s*)?[;=]/,
-      /\b(?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix|Texture\w*|Sampler(?:State|ComparisonState|\w*)?|[A-Z][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\]]*\]\s*)?[;=]/
-    ];
-
-    for (const pattern of patterns) {
-      const match = line.match(pattern);
-      if (match && match[1]) {
-        declarations.add(match[1]);
-      }
-    }
-
-    const funcMatch = line.match(
-      /\b(?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|void|[A-Z][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*\{?/
-    );
-    if (funcMatch) {
-      const funcName = funcMatch[1]!;
-      declarations.add(funcName);
-
-      const paramsStr = funcMatch[2];
-      if (paramsStr && paramsStr.trim()) {
-        const params = paramsStr
-          .split(',')
-          .map(p => p.trim())
-          .filter(p => p);
-
-        for (const param of params) {
-          const paramMatch = param.match(
-            /^(?:(?:in|out|inout)\s+)?(?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix|Texture\w*|Sampler\w*|[A-Z][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*:|$)/
-          );
-          if (paramMatch && paramMatch[1]) {
-            declarations.add(paramMatch[1]);
-          }
-        }
-      }
-    }
-
-    const srgMatch = line.match(/\bShaderResourceGroup\s+([A-Za-z_][A-Za-z0-9_]*)\s*:/);
-    if (srgMatch) declarations.add(srgMatch[1]!);
-  }
-
-  let inSrg = false;
-  let currentSrg = '';
-  let pendingSrg = false;
-  let pendingSrgName = '';
-  let srgBraceDepth = 0;
-  let awaitingSrgOpenBrace = false;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? '';
-    const srgStart = line.match(/\bShaderResourceGroup\s+([A-Za-z_][A-Za-z0-9_]*)\s*:/);
-    if (srgStart) {
-      pendingSrg = true;
-      pendingSrgName = srgStart[1]!;
-      inSrg = false;
-      currentSrg = '';
-      srgBraceDepth = 0;
-      awaitingSrgOpenBrace = false;
-    }
-
-    if (pendingSrg) {
-      const opensHere = (line.match(/{/g) || []).length;
-      const closesHere = (line.match(/}/g) || []).length;
-      const opensNextLine = i + 1 < lines.length && (lines[i + 1] ?? '').trim().startsWith('{');
-      if (opensHere > 0 || opensNextLine) {
-        inSrg = true;
-        currentSrg = pendingSrgName;
-        pendingSrg = false;
-
-        if (opensHere > 0) {
-          srgBraceDepth = opensHere - closesHere;
-          awaitingSrgOpenBrace = false;
-        } else {
-          srgBraceDepth = 0;
-          awaitingSrgOpenBrace = true;
-        }
-      }
-    }
-
-    if (inSrg) {
-      srgBraceDepth += (line.match(/{/g) || []).length;
-      srgBraceDepth -= (line.match(/}/g) || []).length;
-      if (awaitingSrgOpenBrace && (line.match(/{/g) || []).length > 0) {
-        awaitingSrgOpenBrace = false;
-      }
-      if (!awaitingSrgOpenBrace && srgBraceDepth <= 0) {
-        inSrg = false;
-        currentSrg = '';
-        pendingSrg = false;
-        pendingSrgName = '';
-        awaitingSrgOpenBrace = false;
-        continue;
-      }
-    }
-
-    if (inSrg && currentSrg) {
-      let memberMatch = line.match(
-        /^\s*(?:(?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix|(Texture\w*)|(Sampler(?:State|ComparisonState|\w*)?)|([A-Z][A-Za-z0-9_]*)))\s+([A-Za-z_][A-Za-z0-9_]*)\s*[;{]/
-      );
-
-      if (!memberMatch && i + 1 < lines.length) {
-        const nextLine = lines[i + 1] ?? '';
-        if (nextLine.trim().startsWith('{')) {
-          memberMatch = line.match(
-            /^\s*(?:(?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix|(Texture\w*)|(Sampler(?:State|ComparisonState|\w*)?)|([A-Z][A-Za-z0-9_]*)))\s+([A-Za-z_][A-Za-z0-9_]*)\s*$/
-          );
-        }
-      }
-
-      if (memberMatch) {
-        const memberName = memberMatch[4]!;
-        declarations.add(`${currentSrg}::${memberName}`);
-
-        const textureType = memberMatch[1];
-        const samplerType = memberMatch[2];
-        const typeName = memberMatch[3];
-
-        if (textureType) {
-          variableTypes.set(`${currentSrg}::${memberName}`, textureType);
-        } else if (samplerType) {
-          const normalizedSamplerType = samplerType === 'Sampler' ? 'SamplerState' : samplerType;
-          variableTypes.set(`${currentSrg}::${memberName}`, normalizedSamplerType);
-        } else if (typeName) {
-          variableTypes.set(`${currentSrg}::${memberName}`, typeName);
-        }
-      }
-    }
-  }
-
-  for (const line of lines) {
-    const macroMatch = line.match(/#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)/);
-    if (macroMatch) declarations.add(macroMatch[1]!);
-  }
-
-  let inStruct = false;
-  let currentStruct = '';
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? '';
-    const structStart = line.match(/\bstruct\s+([A-Za-z_][A-Za-z0-9_]*)\b/);
-    if (structStart && knownStructs.has(structStart[1]!)) {
-      inStruct = true;
-      currentStruct = structStart[1]!;
-    }
-
-    if (line.includes('}') && inStruct) {
-      inStruct = false;
-      currentStruct = '';
-    }
-
-    if (inStruct && currentStruct) {
-      const memberMatch = line.match(/^\s*(?:float|int|uint|bool|half|double|noperspective|[A-Z][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*:/);
-      if (memberMatch) {
-        declarations.add(`${currentStruct}.${memberMatch[1]!}`);
-      }
-    }
-  }
-
-  const classMembers = new Map<string, Set<string>>();
-  let inClass = false;
-  let currentClass = '';
-  let braceDepth = 0;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? '';
-    const classStart = line.match(/\bclass\s+([A-Za-z_][A-Za-z0-9_]*)\b/);
-    if (classStart) {
-      inClass = true;
-      currentClass = classStart[1]!;
-      knownStructs.add(currentClass);
-      braceDepth = (line.match(/\{/g) || []).length - (line.match(/\}/g) || []).length;
-      if (!classMembers.has(currentClass)) {
-        classMembers.set(currentClass, new Set());
-      }
-    }
-
-    if (inClass && currentClass) {
-      if (!/^\s*#/.test(line)) {
-        braceDepth += (line.match(/\{/g) || []).length;
-        braceDepth -= (line.match(/\}/g) || []).length;
-      }
-
-      const memberMatch = line.match(
-        /^\s*(?:precise\s+)?(?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|Texture\w*|Sampler(?:State|ComparisonState|\w*)?|[A-Z][A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*[;=\(]/
-      );
-      if (memberMatch) {
-        const memberName = memberMatch[1]!;
-        classMembers.get(currentClass)!.add(memberName);
-      }
-
-      if (braceDepth <= 0 && line.includes('}')) {
-        inClass = false;
-        currentClass = '';
-        braceDepth = 0;
-      }
-    }
-  }
-
-  return { declarations, knownStructs, classMembers, variableTypes };
-}
 
 export function validateDocument(document: vscode.TextDocument, diagnosticCollection: vscode.DiagnosticCollection): void {
   if (document.languageId !== 'azsl') {
@@ -517,8 +146,12 @@ export function validateDocument(document: vscode.TextDocument, diagnosticCollec
       return '';
     }
   })();
+  const includedSources = collectIncludedSources(text, documentDir);
+  const includedFunctionNames = new Set(
+    includedSources.flatMap(source => analyzeFunctionScopes(source).map(scope => scope.name))
+  );
 
-  const { declarations, knownStructs, classMembers, variableTypes: extractedVariableTypes } = extractDeclarations(text);
+  const { declarations, knownStructs, classMembers, variableTypes: extractedVariableTypes, structMemberTypes } = extractDiagnosticDeclarations(text);
   const diagnostics: vscode.Diagnostic[] = [];
   const lines = text.split(/\r?\n/);
 
@@ -637,10 +270,18 @@ export function validateDocument(document: vscode.TextDocument, diagnosticCollec
   const variableTypes = new Map(extractedVariableTypes);
 
   const variableDeclarations = new Map<string, { type: string; line: number; braceDepth: number }[]>();
-  const functionReturnTypes = new Map<number, string | null>();
-  const functionScopes: { startLine: number; returnType: string | null; firstParamType: string | null; endLine: number | null }[] = [];
+  const functionScopes = analyzeFunctionScopes(text);
+  const lexicalLines = scanLexicalLines(text);
+
+  for (const scope of functionScopes) {
+    declarations.add(scope.name);
+    for (const parameter of scope.parameters) declarations.add(parameter.name);
+  }
 
   const getVariableTypeAtLine = (varName: string, lineNum: number, currentBraceDepth: number): string | null => {
+    const functionParameter = findFunctionScope(functionScopes, lineNum)?.parameters.find(parameter => parameter.name === varName);
+    if (functionParameter) return functionParameter.type;
+
     if (!variableDeclarations.has(varName)) {
       if (variableTypes.has(varName)) {
         return variableTypes.get(varName)!;
@@ -679,105 +320,15 @@ export function validateDocument(document: vscode.TextDocument, diagnosticCollec
     return null;
   };
 
-  let currentFunctionStart = -1;
-  let currentFunctionReturnType: string | null = null;
-  let currentFunctionFirstParamType: string | null = null;
-  let currentBraceDepth = 0;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? '';
-
-    const funcSigMatch = line.match(
-      /^\s*((?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix(?:[1-4]x[1-4])?|Texture\w*|Sampler\w*|[A-Z][A-Za-z0-9_]*))\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/
-    );
-
-    if (funcSigMatch && !line.trim().startsWith('//')) {
-      const returnType = funcSigMatch[1]!;
-      const funcName = funcSigMatch[2]!;
-
-      currentFunctionStart = i;
-      currentFunctionReturnType = returnType;
-
-      const funcParams = line.match(
-        /\b((?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix(?:[1-4]x[1-4])?|Texture\w*|Sampler\w*|[A-Z][A-Za-z0-9_]*))\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:[,:)]|$)/
-      );
-
-      if (funcParams) {
-        const paramMatch = funcParams[0].match(
-          /\b((?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix(?:[1-4]x[1-4])?|Texture\w*|Sampler\w*|[A-Z][A-Za-z0-9_]*))\s+([A-Za-z_][A-Za-z0-9_]*)/
-        );
-
-        if (paramMatch) {
-          currentFunctionFirstParamType = paramMatch[1]!;
-          debugLog(
-            `[validateDocument] Found function ${funcName} with return type ${returnType} and first param type ${currentFunctionFirstParamType} at line ${i + 1}`
-          );
-        } else {
-          debugLog(`[validateDocument] Found function ${funcName} with return type ${returnType} at line ${i + 1}`);
-        }
-      } else {
-        debugLog(`[validateDocument] Found function ${funcName} with return type ${returnType} at line ${i + 1}`);
-      }
-    }
-
-    const openBraces = (line.match(/{/g) || []).length;
-    const closeBraces = (line.match(/}/g) || []).length;
-    const prevBraceDepth = currentBraceDepth;
-    currentBraceDepth += openBraces - closeBraces;
-
-    if (currentFunctionStart >= 0 && prevBraceDepth === 0 && currentBraceDepth > 0) {
-      const existingScope = functionScopes.find(s => s.startLine === currentFunctionStart);
-      if (!existingScope) {
-        functionScopes.push({
-          startLine: currentFunctionStart,
-          returnType: currentFunctionReturnType,
-          firstParamType: currentFunctionFirstParamType,
-          endLine: null
-        });
-
-        debugLog(
-          `[validateDocument] Function body started at line ${i + 1}, return type: ${currentFunctionReturnType}, first param type: ${currentFunctionFirstParamType}, startLine: ${currentFunctionStart + 1}`
-        );
-      }
-    }
-
-    if (currentFunctionStart >= 0 && prevBraceDepth === 1 && currentBraceDepth === 0) {
-      const scope = functionScopes.find(s => s.startLine === currentFunctionStart);
-      if (scope) {
-        scope.endLine = i;
-        functionReturnTypes.set(scope.startLine, scope.returnType);
-        debugLog(
-          `[validateDocument] Function ended at line ${i + 1}, startLine: ${currentFunctionStart + 1}, returnType: ${scope.returnType}`
-        );
-      }
-
-      currentFunctionStart = -1;
-      currentFunctionReturnType = null;
-      currentFunctionFirstParamType = null;
-    }
-  }
-
-  debugLog(`[validateDocument] Total functions found: ${functionScopes.length}`);
-  for (const scope of functionScopes) {
-    debugLog(
-      `[validateDocument] Function scope: startLine=${scope.startLine + 1}, endLine=${scope.endLine ? scope.endLine + 1 : 'null'}, returnType=${scope.returnType}, firstParamType=${scope.firstParamType || 'null'}`
-    );
-  }
-
   const isAzslFile = fileName.endsWith('.azsl') && !fileName.endsWith('.azsli');
-  const nonStaticOptions: { name: string; line: number; fromIndex: boolean }[] = [];
-  let hasShaderVariantFallback = false;
+  const nonStaticOptions = [...extractOptionDeclarations(text, document.uri.fsPath).values()]
+    .filter(option => !option.isStatic)
+    .map(option => ({ name: option.name, line: option.line }));
+  let hasShaderVariantFallback = includedSources.some(source =>
+    /\bShaderResourceGroup\s+[A-Za-z_][A-Za-z0-9_]*\s*:\s*(?:SRG_PerDraw|SRG_PerPass_WithFallback|SRG_RayTracingGlobal)\b/.test(source)
+  );
 
   const variantFallbackSemantics = new Set(['SRG_PerDraw', 'SRG_PerPass_WithFallback', 'SRG_RayTracingGlobal']);
-
-  if (isAzslFile) {
-    for (const [optionName, optionInfo] of optionIndex.entries()) {
-      if (!optionInfo.isStatic) {
-        nonStaticOptions.push({ name: optionName, line: -1, fromIndex: true });
-        debugLog(`[validateDocument] Found non-static option from index: ${optionName}`);
-      }
-    }
-  }
 
   let inMultiLineComment = false;
 
@@ -814,17 +365,6 @@ export function validateDocument(document: vscode.TextDocument, diagnosticCollec
     const processedLine = line.trim();
     if (!processedLine) {
       continue;
-    }
-
-    const optionMatch = processedLine.match(/^\s*option\s+(?:bool|int|uint)\s+([A-Za-z_][A-Za-z0-9_]*)\s*[=;]/);
-    if (optionMatch) {
-      if (!processedLine.includes('static')) {
-        const optionName = optionMatch[1]!;
-        if (!nonStaticOptions.some(o => o.name === optionName)) {
-          nonStaticOptions.push({ name: optionName, line: i, fromIndex: false });
-          debugLog(`[validateDocument] Found non-static option in current file: ${optionName} at line ${i + 1}`);
-        }
-      }
     }
 
     const srgMatch = processedLine.match(/(?:partial\s+)?ShaderResourceGroup\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z_][A-Za-z0-9_]*)/);
@@ -872,40 +412,13 @@ export function validateDocument(document: vscode.TextDocument, diagnosticCollec
     }
   }
 
-  const getCurrentFunctionReturnType = (lineNum: number): string | null => {
-    debugLog(`[getCurrentFunctionReturnType] Checking line ${lineNum + 1}, functionScopes.length = ${functionScopes.length}`);
-    for (let j = functionScopes.length - 1; j >= 0; j--) {
-      const scope = functionScopes[j]!;
-      debugLog(
-        `[getCurrentFunctionReturnType] Scope ${j}: startLine=${scope.startLine + 1}, endLine=${scope.endLine ? scope.endLine + 1 : 'null'}, returnType=${scope.returnType}`
-      );
-      if (scope.startLine <= lineNum && (!scope.endLine || lineNum <= scope.endLine)) {
-        debugLog(`[getCurrentFunctionReturnType] Found matching scope, returnType=${scope.returnType}`);
-        return scope.returnType;
-      }
-    }
-    debugLog(`[getCurrentFunctionReturnType] No matching scope found for line ${lineNum + 1}`);
-    return null;
-  };
-
-  const getCurrentFunctionParameterType = (lineNum: number): string | null => {
-    debugLog(`[getCurrentFunctionParameterType] Checking line ${lineNum + 1}, functionScopes.length = ${functionScopes.length}`);
-    for (let j = functionScopes.length - 1; j >= 0; j--) {
-      const scope = functionScopes[j]!;
-      debugLog(
-        `[getCurrentFunctionParameterType] Scope ${j}: startLine=${scope.startLine + 1}, endLine=${scope.endLine ? scope.endLine + 1 : 'null'}, firstParamType=${scope.firstParamType || 'null'}`
-      );
-      if (scope.startLine <= lineNum && (!scope.endLine || lineNum <= scope.endLine)) {
-        debugLog(`[getCurrentFunctionParameterType] Found matching scope, firstParamType=${scope.firstParamType || 'null'}`);
-        return scope.firstParamType;
-      }
-    }
-    debugLog(`[getCurrentFunctionParameterType] No matching scope found for line ${lineNum + 1}`);
-    return null;
-  };
+  const getCurrentFunctionReturnType = (lineNum: number): string | null =>
+    findFunctionScope(functionScopes, lineNum)?.returnType ?? null;
+  const getCurrentFunctionParameterType = (lineNum: number): string | null =>
+    findFunctionScope(functionScopes, lineNum)?.firstParamType ?? null;
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? '';
+    const line = lexicalLines[i]?.code ?? '';
 
     if (line.includes('(') && !line.trim().startsWith('//')) {
       const funcParams = line.match(
@@ -948,10 +461,8 @@ export function validateDocument(document: vscode.TextDocument, diagnosticCollec
   let varBraceDepth = 0;
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? '';
-    const openBraces = (line.match(/{/g) || []).length;
-    const closeBraces = (line.match(/}/g) || []).length;
-    varBraceDepth += openBraces - closeBraces;
+    const line = lexicalLines[i]?.code ?? '';
+    varBraceDepth += lexicalLines[i]?.braceDelta ?? 0;
 
     const constVarDeclMatch = line.match(
       /\bconst\s+((?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix|Texture\w*|Sampler\w*|[A-Z][A-Za-z0-9_]*))\s+([A-Za-z_][A-Za-z0-9_]*)\s*[;=]/
@@ -987,26 +498,6 @@ export function validateDocument(document: vscode.TextDocument, diagnosticCollec
       let fullType = varDeclMatch[1]!;
       const varName = varDeclMatch[2]!;
 
-      if (varName === 'OUT' || varName === 'out') {
-        const funcReturnType = getCurrentFunctionReturnType(i);
-        if (funcReturnType) {
-          fullType = funcReturnType;
-          debugLog(`[validateDocument] OUT variable at line ${i + 1} - using function return type: ${fullType} (was: ${varDeclMatch[1]})`);
-        } else {
-          debugLog(`[validateDocument] OUT variable at line ${i + 1} - no function return type found, keeping original type: ${fullType}`);
-        }
-      }
-
-      if (varName === 'IN' || varName === 'in') {
-        const funcParamType = getCurrentFunctionParameterType(i);
-        if (funcParamType) {
-          fullType = funcParamType;
-          debugLog(`[validateDocument] IN variable at line ${i + 1} - using function first param type: ${fullType} (was: ${varDeclMatch[1]})`);
-        } else {
-          debugLog(`[validateDocument] IN variable at line ${i + 1} - no function param type found, keeping original type: ${fullType}`);
-        }
-      }
-
       debugLog(`[validateDocument] Found var decl: ${varName} : ${fullType} on line ${i + 1}, braceDepth=${varBraceDepth}`);
       if (!variableDeclarations.has(varName)) {
         variableDeclarations.set(varName, []);
@@ -1041,24 +532,56 @@ export function validateDocument(document: vscode.TextDocument, diagnosticCollec
     }
   }
 
+  const braceDepthByLine: number[] = [];
+  let memberBraceDepth = 0;
+  for (let line = 0; line < lexicalLines.length; line++) {
+    memberBraceDepth += lexicalLines[line]?.braceDelta ?? 0;
+    braceDepthByLine[line] = memberBraceDepth;
+  }
+  for (const issue of collectMemberAccessIssues(lexicalLines.map(line => line.code), {
+    getVariableType: (name, line) => getVariableTypeAtLine(name, line, braceDepthByLine[line] ?? 0),
+    getStructMembers: type => structMembers.get(type),
+    getStructMemberType: (type, member) => structMemberTypes.get(type)?.get(member) ?? null,
+    getAtomMembers: type => atomTypeMembers.get(type)
+  })) {
+    diagnostics.push(
+      new vscode.Diagnostic(
+        new vscode.Range(issue.line, issue.start, issue.line, issue.end),
+        issue.message,
+        vscode.DiagnosticSeverity.Error
+      )
+    );
+  }
+
+  for (const issue of collectFunctionCallIssues(lexicalLines.map(line => line.code), {
+    functions: functionScopes,
+    isKnownFunction: name => declarations.has(name) || functionIndex.has(name) || includedFunctionNames.has(name),
+    getVariableType: (name, line) => getVariableTypeAtLine(name, line, braceDepthByLine[line] ?? 0)
+  })) {
+    diagnostics.push(
+      new vscode.Diagnostic(
+        new vscode.Range(issue.line, issue.start, issue.line, issue.end),
+        issue.message,
+        vscode.DiagnosticSeverity.Error
+      )
+    );
+  }
+
   const methodClassContext = new Map<number, string>();
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? '';
+    const line = lexicalLines[i]?.code ?? '';
     const methodMatch = line.match(/\b([A-Za-z_][A-Za-z0-9_]*)\s*::\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(/);
     if (methodMatch) {
       const className = methodMatch[1]!;
       if (classMembers.has(className)) {
-        let methodBraceDepth = (line.match(/\{/g) || []).length - (line.match(/\}/g) || []).length;
+        let methodBraceDepth = lexicalLines[i]?.braceDelta ?? 0;
         let methodStart = i;
         if (methodBraceDepth === 0 && !line.includes('{')) {
           methodStart = i + 1;
         }
         for (let j = methodStart; j < lines.length; j++) {
-          const methodLine = lines[j] ?? '';
-          if (!/^\s*#/.test(methodLine)) {
-            methodBraceDepth += (methodLine.match(/\{/g) || []).length;
-            methodBraceDepth -= (methodLine.match(/\}/g) || []).length;
-          }
+          const methodLine = lexicalLines[j]?.code ?? '';
+          methodBraceDepth += lexicalLines[j]?.braceDelta ?? 0;
           if (j >= methodStart) {
             methodClassContext.set(j, className);
           }
@@ -1080,9 +603,7 @@ export function validateDocument(document: vscode.TextDocument, diagnosticCollec
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] ?? '';
-    const openBraces = (line.match(/{/g) || []).length;
-    const closeBraces = (line.match(/}/g) || []).length;
-    validationBraceDepth += openBraces - closeBraces;
+    validationBraceDepth += lexicalLines[i]?.braceDelta ?? 0;
 
     if (!samplerBlockState) {
       samplerBlockState = {
@@ -1257,7 +778,7 @@ export function validateDocument(document: vscode.TextDocument, diagnosticCollec
         }
       }
 
-      samplerBlockState.braceDepth += openBraces - closeBraces;
+      samplerBlockState.braceDepth += lexicalLines[i]?.braceDelta ?? 0;
       if (samplerBlockState.braceDepth <= 0 || /^\s*};\s*$/.test(line)) {
         samplerBlockState.inSampler = false;
         samplerBlockState.pendingSampler = false;
@@ -1357,13 +878,19 @@ export function validateDocument(document: vscode.TextDocument, diagnosticCollec
         const looksLikeStatementNeedingSemicolon = () => {
           if (trimmedAfterComments.endsWith(';')) return false;
           if (trimmedAfterComments.endsWith('.') || /::\s*$/.test(trimmedAfterComments)) return false;
-          if (trimmedAfterComments.endsWith('{') || trimmedAfterComments.endsWith('}') || trimmedAfterComments.endsWith(',')) return false;
+          if (/[({[,=+\-*\/%?:]\s*$/.test(trimmedAfterComments)) return false;
+          const openParens = (trimmedAfterComments.match(/\(/g) ?? []).length;
+          const closeParens = (trimmedAfterComments.match(/\)/g) ?? []).length;
+          const openBrackets = (trimmedAfterComments.match(/\[/g) ?? []).length;
+          const closeBrackets = (trimmedAfterComments.match(/\]/g) ?? []).length;
+          if (openParens > closeParens || openBrackets > closeBrackets) return false;
           if (/^[A-Z_][A-Z0-9_]*$/.test(trimmedAfterComments)) return false;
           for (let j = i + 1; j < Math.min(lines.length, i + 6); j++) {
             const nl = (lines[j] || '').trim();
             if (!nl) continue;
             if (nl.startsWith('//')) continue;
             if (nl.startsWith('{')) return false;
+            if (/^[?:+\-*\/%]/.test(nl)) return false;
             break;
           }
           if (/^\s*(if|for|while|switch)\b/.test(trimmedAfterComments)) return false;
@@ -1468,7 +995,7 @@ export function validateDocument(document: vscode.TextDocument, diagnosticCollec
         const expressionBeforeDot = beforeAccess.substring(0, beforeAccess.lastIndexOf('.'));
         let exprType: string | null = null;
         if (expressionBeforeDot.trim().endsWith(')')) {
-          exprType = getExpressionType(document, expressionBeforeDot, i, v => getVariableTypeAtLineForExpression(v, i));
+          exprType = inferExpressionType(expressionBeforeDot, v => getVariableTypeAtLineForExpression(v, i), debugLog);
           if (exprType) {
             debugLog(`[validateDocument] Found expression type: ${exprType} for '${expressionBeforeDot}'`);
           }
@@ -1539,7 +1066,7 @@ export function validateDocument(document: vscode.TextDocument, diagnosticCollec
           debugLog(`[validateDocument] Variable access: ${varName} on line ${i + 1}, checking member '${identifier}'`);
 
           const expressionBeforeDot2 = beforeAccess.substring(0, beforeAccess.lastIndexOf('.'));
-          const exprType2 = getExpressionType(document, expressionBeforeDot2, i, v => getVariableTypeAtLineForExpression(v, i));
+          const exprType2 = inferExpressionType(expressionBeforeDot2, v => getVariableTypeAtLineForExpression(v, i), debugLog);
           if (exprType2) {
             varType = exprType2;
             debugLog(`[validateDocument] Inferred type from expression '${expressionBeforeDot2}': ${varType}`);
@@ -1855,177 +1382,14 @@ export function validateDocument(document: vscode.TextDocument, diagnosticCollec
     }
   }
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? '';
-    if (/^\s*\/\//.test(line) || /^\s*#/.test(line)) {
-      continue;
-    }
-    let lineWithoutComments = line;
-    lineWithoutComments = lineWithoutComments.replace(/\/\*[\s\S]*?\*\//g, '');
-    const commentIndex = lineWithoutComments.indexOf('//');
-    if (commentIndex !== -1) {
-      lineWithoutComments = lineWithoutComments.substring(0, commentIndex);
-    }
-    const trimmedLine = lineWithoutComments.trim();
-    const incompleteDotMatch = trimmedLine.match(/([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*$/);
-    if (incompleteDotMatch) {
-      if (i + 1 < lines.length) {
-        const nextLine = (lines[i + 1] ?? '').trim();
-        if (
-          /^(float|int|uint|bool|half|double|void|matrix|Texture|Sampler|struct|class|namespace|ShaderResourceGroup|cbuffer|tbuffer|#|\/\/|\/\*)/.test(
-            nextLine
-          ) ||
-          /^[A-Z][A-Za-z0-9_]*\s+[A-Za-z_]/.test(nextLine)
-        ) {
-          const dotPos = line.lastIndexOf('.');
-          const range = new vscode.Range(i, dotPos, i, dotPos + 1);
-          diagnostics.push(new vscode.Diagnostic(range, `incomplete member access`, vscode.DiagnosticSeverity.Error));
-        }
-      } else {
-        const dotPos = line.lastIndexOf('.');
-        const range = new vscode.Range(i, dotPos, i, dotPos + 1);
-        diagnostics.push(new vscode.Diagnostic(range, `incomplete member access`, vscode.DiagnosticSeverity.Error));
-      }
-    }
-
-    const incompleteColonMatch = trimmedLine.match(/([A-Za-z_][A-Za-z0-9_]*)\s*::\s*$/);
-    if (incompleteColonMatch) {
-      if (i + 1 < lines.length) {
-        const nextLine = (lines[i + 1] ?? '').trim();
-        if (
-          /^(float|int|uint|bool|half|double|void|matrix|Texture|Sampler|struct|class|namespace|ShaderResourceGroup|cbuffer|tbuffer|#|\/\/|\/\*)/.test(
-            nextLine
-          ) ||
-          /^[A-Z][A-Za-z0-9_]*\s+[A-Za-z_]/.test(nextLine)
-        ) {
-          const colonPos = line.lastIndexOf('::');
-          const range = new vscode.Range(i, colonPos, i, colonPos + 2);
-          diagnostics.push(new vscode.Diagnostic(range, `incomplete member access`, vscode.DiagnosticSeverity.Error));
-        }
-      } else {
-        const colonPos = line.lastIndexOf('::');
-        const range = new vscode.Range(i, colonPos, i, colonPos + 2);
-        diagnostics.push(new vscode.Diagnostic(range, `incomplete member access`, vscode.DiagnosticSeverity.Error));
-      }
-    }
-
-    const dotSemicolonRegex = /\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*;/g;
-    let m: RegExpExecArray | null;
-    while ((m = dotSemicolonRegex.exec(lineWithoutComments)) !== null) {
-      const dotPos = m.index + m[1]!.length;
-      const semicolonPos = lineWithoutComments.indexOf(';', dotPos);
-      const range = new vscode.Range(i, dotPos, i, semicolonPos + 1);
-      diagnostics.push(new vscode.Diagnostic(range, `syntax error: unexpected ';' after '.'`, vscode.DiagnosticSeverity.Error));
-    }
-
-    const doubleDotRegex = /\b([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*\./g;
-    while ((m = doubleDotRegex.exec(lineWithoutComments)) !== null) {
-      const firstDotPos = m.index + m[1]!.length;
-      const range = new vscode.Range(i, firstDotPos, i, firstDotPos + 2);
-      diagnostics.push(new vscode.Diagnostic(range, `syntax error: unexpected '.' after '.'`, vscode.DiagnosticSeverity.Error));
-    }
-
-    const colonSemicolonRegex = /\b([A-Za-z_][A-Za-z0-9_]*)\s*::\s*;/g;
-    while ((m = colonSemicolonRegex.exec(lineWithoutComments)) !== null) {
-      const colonPos = m.index + m[1]!.length;
-      const semicolonPos = lineWithoutComments.indexOf(';', colonPos);
-      const range = new vscode.Range(i, colonPos, i, semicolonPos + 1);
-      diagnostics.push(new vscode.Diagnostic(range, `syntax error: unexpected ';' after '::'`, vscode.DiagnosticSeverity.Error));
-    }
+  for (const issue of collectStructuralSyntaxIssues(lines)) {
+    const range = new vscode.Range(issue.line, issue.start, issue.line, issue.end);
+    diagnostics.push(new vscode.Diagnostic(range, issue.message, vscode.DiagnosticSeverity.Error));
   }
 
-  {
-    let structBlockState: { pendingStruct: boolean; inStruct: boolean; braceDepth: number } | null = null;
-
-    const getNextToken = (fromLineExclusive: number): { text: string; line: number; col: number } | null => {
-      for (let look = fromLineExclusive + 1; look < lines.length; look++) {
-        const raw = lines[look] ?? '';
-        if (/^\s*#/.test(raw)) continue;
-        const withoutBlockComments = raw.replace(/\/\*[\s\S]*?\*\//g, '');
-        const withoutLineComment = withoutBlockComments.replace(/\/\/.*$/, '');
-        const trimmed = withoutLineComment.trim();
-        if (trimmed.length === 0) continue;
-
-        const m = withoutLineComment.match(/\b([A-Za-z_][A-Za-z0-9_]*)\b/);
-        if (!m) return null;
-        const text = m[1]!;
-        const col = withoutLineComment.indexOf(text);
-        return { text, line: look, col: Math.max(0, col) };
-      }
-      return null;
-    };
-
-    for (let i = 0; i < lines.length; i++) {
-      const rawLine = lines[i] ?? '';
-      if (/^\s*\/\//.test(rawLine) || /^\s*#/.test(rawLine)) continue;
-
-      const lineWithoutBlockComments = rawLine.replace(/\/\*[\s\S]*?\*\//g, '');
-      const line = lineWithoutBlockComments.replace(/\/\/.*$/, '');
-      const trimmed = line.trim();
-      if (trimmed.length === 0) continue;
-
-      if (!structBlockState) {
-        structBlockState = { pendingStruct: false, inStruct: false, braceDepth: 0 };
-      }
-
-      if (!structBlockState.inStruct) {
-        if (/^\s*struct\b/.test(trimmed)) {
-          structBlockState.pendingStruct = true;
-          if (/{/.test(line)) {
-            structBlockState.inStruct = true;
-            structBlockState.pendingStruct = false;
-            structBlockState.braceDepth = (line.match(/{/g)?.length ?? 0) - (line.match(/}/g)?.length ?? 0);
-            if (structBlockState.braceDepth <= 0) {
-              structBlockState.inStruct = false;
-              structBlockState.braceDepth = 0;
-            }
-          }
-        } else if (structBlockState.pendingStruct) {
-          if (/{/.test(line)) {
-            structBlockState.inStruct = true;
-            structBlockState.pendingStruct = false;
-            structBlockState.braceDepth = (line.match(/{/g)?.length ?? 0) - (line.match(/}/g)?.length ?? 0);
-            if (structBlockState.braceDepth <= 0) {
-              structBlockState.inStruct = false;
-              structBlockState.braceDepth = 0;
-            }
-          }
-        }
-      } else {
-        if (/[^:]\s*:\s*$/.test(line) && !/::\s*$/.test(line)) {
-          const next = getNextToken(i);
-          if (next) {
-            const range = new vscode.Range(next.line, next.col, next.line, next.col + next.text.length);
-            diagnostics.push(
-              new vscode.Diagnostic(
-                range,
-                `syntax error: no viable alternative at input '${next.text}' (${next.text} was unexpected)`,
-                vscode.DiagnosticSeverity.Error
-              )
-            );
-          } else {
-            const colonPos = line.lastIndexOf(':');
-            const range = new vscode.Range(i, Math.max(0, colonPos), i, Math.max(0, colonPos) + 1);
-            diagnostics.push(
-              new vscode.Diagnostic(
-                range,
-                `syntax error: no viable alternative at input ':'`,
-                vscode.DiagnosticSeverity.Error
-              )
-            );
-          }
-        }
-
-        const open = line.match(/{/g)?.length ?? 0;
-        const close = line.match(/}/g)?.length ?? 0;
-        structBlockState.braceDepth += open - close;
-        if (structBlockState.braceDepth <= 0) {
-          structBlockState.inStruct = false;
-          structBlockState.pendingStruct = false;
-          structBlockState.braceDepth = 0;
-        }
-      }
-    }
+  for (const issue of collectSourceSyntaxIssues(text)) {
+    const range = new vscode.Range(issue.line, issue.start, issue.line, issue.end);
+    diagnostics.push(new vscode.Diagnostic(range, issue.message, vscode.DiagnosticSeverity.Error));
   }
 
   safeSetDiagnostics(document, diagnosticCollection, diagnostics);

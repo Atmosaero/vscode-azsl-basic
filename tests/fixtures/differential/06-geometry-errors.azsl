@@ -1,0 +1,44 @@
+// Differential fixture based on Wireframe's geometry-stage constructs.
+struct VertexToGeometry
+{
+    float4 m_position : SV_Position;
+};
+
+struct GeometryToPixel
+{
+    float4 m_position : SV_Position;
+    float3 m_barycentric : TEXCOORD0;
+};
+
+VertexToGeometry MainVS(float3 position : POSITION)
+{
+    VertexToGeometry outputVertex;
+    outputVertex.m_position = float4(position, 1.0);
+    return outputVertex;
+}
+
+[maxvertexcount(3)]
+void MainGS(
+    triangle VertexToGeometry inputVertices[3],
+    inout TriangleStream<GeometryToPixel> outputStream)
+{
+    GeometryToPixel outputVertex;
+    outputVertex.m_position = inputVertices[0].m_missingPosition; // AZERR16: geometry input member missing
+    outputVertex.m_barycentric = float3(1.0, 0.0, 0.0);
+    outputStream.Append(outputVertex);
+}
+
+[maxvertexcount(3)]
+void GeometryWrongAppendType(
+    triangle VertexToGeometry inputVertices[3],
+    inout TriangleStream<GeometryToPixel> outputStream)
+{
+    VertexToGeometry wrongOutput;
+    wrongOutput.m_position = inputVertices[0].m_position;
+    outputStream.Append(wrongOutput); // AZERR17: stream element type mismatch
+}
+
+float4 MainPS(GeometryToPixel input) : SV_Target0
+{
+    return float4(input.m_barycentric, 1.0);
+}

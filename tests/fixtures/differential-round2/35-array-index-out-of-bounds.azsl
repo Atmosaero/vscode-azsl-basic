@@ -1,0 +1,6 @@
+float4 MainPS() : SV_Target0
+{
+    float values[2] = { 1.0, 2.0 };
+    values[3] = 4.0; // AZERR35: constant array index out of bounds
+    return float4(values[0], values[1], 0.0, 1.0);
+}

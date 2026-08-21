@@ -1,0 +1,9 @@
+struct FirstType { float m_value; };
+struct SecondType { float m_value; };
+float4 MainPS() : SV_Target0
+{
+    FirstType firstValue;
+    SecondType secondValue;
+    firstValue = secondValue; // AZERR31: incompatible struct assignment
+    return float4(firstValue.m_value, 0.0, 0.0, 1.0);
+}

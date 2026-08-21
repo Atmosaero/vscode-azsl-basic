@@ -1,0 +1,3 @@
+float DuplicateFunction(float value) { return value; }
+float DuplicateFunction(float value) { return value * 2.0; } // AZERR29: duplicate identical overload
+float4 MainPS() : SV_Target0 { return float4(DuplicateFunction(1.0), 0.0, 0.0, 1.0); }

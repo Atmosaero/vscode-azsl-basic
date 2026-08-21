@@ -1,0 +1,5 @@
+// Differential fixture: sampler-state property without a value.
+Sampler MissingValueSampler
+{
+    AddressU = ; // AZERR15: missing sampler property value
+};

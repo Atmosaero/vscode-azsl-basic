@@ -1,0 +1,10 @@
+// Differential fixture: unknown SRG/name access.
+float UnknownSrgName()
+{
+    return UnknownMaterialSrg::m_baseColor.x; // AZERR06: SRG/name does not exist
+}
+
+float4 MainPS() : SV_Target0
+{
+    return float4(UnknownSrgName(), 0.0, 0.0, 1.0);
+}

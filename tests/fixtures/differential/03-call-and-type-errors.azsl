@@ -1,0 +1,25 @@
+// Differential fixture: function-call and return-type failures.
+float AddPair(float lhs, float rhs)
+{
+    return lhs + rhs;
+}
+
+float WrongArgumentCount()
+{
+    return AddPair(1.0); // AZERR07: too few arguments
+}
+
+float UnknownFunctionCall()
+{
+    return FunctionThatDoesNotExist(1.0); // AZERR08: unknown function
+}
+
+float3 WrongReturnType()
+{
+    return float4(1.0, 2.0, 3.0, 4.0); // AZERR09: implicit vector truncation warning
+}
+
+float4 MainPS() : SV_Target0
+{
+    return float4(WrongArgumentCount(), UnknownFunctionCall(), WrongReturnType().x, 1.0);
+}

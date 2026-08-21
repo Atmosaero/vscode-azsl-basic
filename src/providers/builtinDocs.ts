@@ -34,6 +34,8 @@ export const builtinDocs = new Map<string, string>(
       "```hlsl\nT ddx(T x)\n```\nReturns the approximate partial derivative of `x` with respect to screen-space x-coordinate. Available in pixel shaders.\n\n**Parameters:**\n- `x`: input value\n\n**Returns:** `T` - derivative",
     ddy:
       "```hlsl\nT ddy(T x)\n```\nReturns the approximate partial derivative of `x` with respect to screen-space y-coordinate. Available in pixel shaders.\n\n**Parameters:**\n- `x`: input value\n\n**Returns:** `T` - derivative",
+    fwidth:
+      "```hlsl\nT fwidth(T x)\n```\nReturns `abs(ddx(x)) + abs(ddy(x))`, component-wise. Available in pixel shaders and commonly used for resolution-independent antialiasing.",
     abs:
       "```hlsl\nT abs(T x)\n```\nReturns the absolute value of `x`. Component-wise for vectors.\n\n**Parameters:**\n- `x`: input value\n\n**Returns:** `T` - absolute value",
     sin:

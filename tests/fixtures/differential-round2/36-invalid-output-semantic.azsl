@@ -1,0 +1,5 @@
+// AZERR36: invalid fragment output semantic
+float4 MainPS() : SEMANTIC_THAT_DOES_NOT_EXIST
+{
+    return float4(1.0, 0.0, 1.0, 1.0);
+}

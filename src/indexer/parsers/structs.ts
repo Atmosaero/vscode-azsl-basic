@@ -42,7 +42,9 @@ export function extractStructDeclarations(text: string, filePath: string): Parse
     let isSingleLineStruct = false;
 
     if (line.includes('{')) {
-      braceDepth = 1;
+      // The declaration line is scanned below, so start at zero to avoid
+      // counting its opening brace twice.
+      braceDepth = 0;
       if (line.includes('}') && line.includes(';')) {
         isSingleLineStruct = true;
         braceDepth = 0;
@@ -194,7 +196,7 @@ export function extractStructDeclarations(text: string, filePath: string): Parse
         if (braceDepth > 0) {
           const trimmed = structLine.trim();
           if (!(trimmed.startsWith('//') || trimmed.startsWith('/*') || trimmed.length === 0)) {
-            let memberMatch = trimmed.match(/^\s*(?:noperspective\s+)?(?:(?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix(?:[1-4]x[1-4])?|Texture\w*|Sampler(?:State|ComparisonState|\w*)?|[A-Z][A-Za-z0-9_<>,\s]*))\s+([A-Za-z_][A-Za-z0-9_]*)\s*[;:]/);
+            let memberMatch = trimmed.match(/^\s*(?:noperspective\s+)?(?:(?:float(?:[1-4](?:x[1-4])?)?|real(?:[1-4](?:x[1-4])?)?|int(?:[1-4])?|uint(?:[1-4])?|bool|half|double|matrix(?:[1-4]x[1-4])?|Texture\w*|Sampler(?:State|ComparisonState|\w*)?|[A-Z][A-Za-z0-9_<>,\s]*))\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\]]*\]\s*)?[;:]/);
             if (!memberMatch) {
               memberMatch = trimmed.match(/^\s*(?:noperspective\s+)?([A-Za-z_][A-Za-z0-9_<>,\s]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*[;:]/);
             }

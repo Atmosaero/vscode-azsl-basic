@@ -1,0 +1,5 @@
+#include <Atom/Features/SrgSemantics.azsli>
+
+option bool o_invalidOption = 2; // AZERR40: invalid bool option initializer
+ShaderResourceGroup FallbackSrg : SRG_PerDraw { float m_unused; }
+float4 MainPS() : SV_Target0 { return float4(1.0, 1.0, 1.0, 1.0); }

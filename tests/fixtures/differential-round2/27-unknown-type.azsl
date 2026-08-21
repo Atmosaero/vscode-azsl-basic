@@ -1,0 +1,5 @@
+float4 MainPS() : SV_Target0
+{
+    TypeThatDoesNotExist value; // AZERR27: unknown type
+    return float4(1.0, 1.0, 1.0, 1.0);
+}

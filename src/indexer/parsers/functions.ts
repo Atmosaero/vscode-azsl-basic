@@ -24,8 +24,15 @@ export function extractFunctionDeclarations(text: string, filePath: string): Map
 
     const structClassMatch = line.match(/\b(?:struct|class)\s+([A-Za-z_][A-Za-z0-9_]*)\s*[:\{]?/);
     if (structClassMatch) {
+      if (line.includes('{') && openBraces === closeBraces) {
+        // A complete one-line type has no body to carry into later lines.
+        continue;
+      }
       inStructOrClass = true;
-      structClassDepth = braceDepth;
+      // A declaration may put its opening brace on the next line. In that
+      // form the body begins one level deeper than the declaration line.
+      structClassDepth = line.includes('{') ? braceDepth : braceDepth + 1;
+      continue;
     }
 
     if (inStructOrClass && braceDepth < structClassDepth) {

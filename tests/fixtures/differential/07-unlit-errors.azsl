@@ -1,0 +1,26 @@
+// Differential fixture shaped like a modern Unlit vertex/pixel pair.
+struct UnlitVertexInput
+{
+    float3 m_position : POSITION;
+    float2 m_uv : UV0;
+};
+
+struct UnlitVertexOutput
+{
+    float4 m_position : SV_Position;
+    float2 m_uv : TEXCOORD0;
+};
+
+UnlitVertexOutput MainVS(UnlitVertexInput input)
+{
+    UnlitVertexOutput output;
+    output.m_position = float4(input.m_position, 1.0);
+    output.m_uv = input.m_missingUv; // AZERR18: modern Unlit input member missing
+    return output;
+}
+
+float4 MainPS(UnlitVertexOutput input) : SV_Target0
+{
+    float alpha = input.m_uv.q; // AZERR19: invalid vector swizzle
+    return float4(input.m_uv, alpha, missingUnlitValue); // AZERR20: undeclared identifier
+}

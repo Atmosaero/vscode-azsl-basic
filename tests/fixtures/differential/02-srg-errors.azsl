@@ -1,0 +1,21 @@
+// Differential fixture: SRG lookup and declaration failures.
+ShaderResourceGroupSemantic SRG_PerMaterial
+{
+    FrequencyId = 2;
+};
+
+ShaderResourceGroup MaterialSrg : SRG_PerMaterial
+{
+    float4 m_baseColor;
+    float m_roughness;
+};
+
+float4 MissingSrgMember()
+{
+    return MaterialSrg::m_emissiveColor; // AZERR04: SRG member does not exist
+}
+
+float4 MainPS() : SV_Target0
+{
+    return MissingSrgMember();
+}

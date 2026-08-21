@@ -1,0 +1,12 @@
+// Differential fixture: local ODR violation is isolated because AZSLc stops after it.
+float DuplicateSrgDeclaration()
+{
+    float localValue = 1.0;
+    float localValue = 2.0; // AZERR05: duplicate local declaration
+    return localValue;
+}
+
+float4 MainPS() : SV_Target0
+{
+    return float4(DuplicateSrgDeclaration(), 0.0, 0.0, 1.0);
+}
