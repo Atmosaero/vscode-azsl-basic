@@ -1,0 +1,27 @@
+// Differential fixture: independent semantic failures in separate functions.
+struct SurfaceData
+{
+    float3 m_normal;
+    float2 m_uv;
+};
+
+float MissingStructMember()
+{
+    SurfaceData surface;
+    return surface.m_roughness; // AZERR01: struct member does not exist
+}
+
+float InvalidVectorSwizzle(float2 uv)
+{
+    return uv.z; // AZERR02: float2 has no z component
+}
+
+float UndeclaredName()
+{
+    return missingGlobalValue; // AZERR03: undeclared identifier
+}
+
+float4 MainPS() : SV_Target0
+{
+    return float4(MissingStructMember(), InvalidVectorSwizzle(float2(0.0, 0.0)), UndeclaredName(), 1.0);
+}

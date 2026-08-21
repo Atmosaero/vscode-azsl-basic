@@ -1,0 +1,5 @@
+// Differential fixture: unknown sampler-state property.
+Sampler BadPropertySampler
+{
+    TotallyUnknownProperty = MIN_MAG_MIP_LINEAR; // AZERR13: unknown sampler property
+};

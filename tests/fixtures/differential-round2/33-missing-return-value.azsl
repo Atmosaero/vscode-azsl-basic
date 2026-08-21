@@ -1,0 +1,5 @@
+float InvalidReturn()
+{
+    return; // AZERR33: missing non-void return value
+}
+float4 MainPS() : SV_Target0 { return float4(InvalidReturn(), 0.0, 0.0, 1.0); }

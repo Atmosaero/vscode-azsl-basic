@@ -1,0 +1,5 @@
+void InvalidVoidReturn()
+{
+    return 1.0; // AZERR32: value returned from void function
+}
+float4 MainPS() : SV_Target0 { InvalidVoidReturn(); return float4(1.0, 1.0, 1.0, 1.0); }

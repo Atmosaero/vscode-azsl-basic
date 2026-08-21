@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 
 import { functionIndex, macroIndex, optionIndex, srgIndex, srgSemanticIndex, structIndex } from '../indexer/state';
+import { extractOptionDeclarations } from '../indexer/parsers/options';
 
 type MatchSpec = {
   kind: vscode.SymbolKind;
@@ -11,7 +12,6 @@ const documentSymbolSpecs: MatchSpec[] = [
   { kind: vscode.SymbolKind.Struct, regex: /^\s*struct\s+([A-Za-z_][A-Za-z0-9_]*)\b/gm },
   { kind: vscode.SymbolKind.Class, regex: /^\s*ShaderResourceGroup\s+([A-Za-z_][A-Za-z0-9_]*)\b/gm },
   { kind: vscode.SymbolKind.Enum, regex: /^\s*ShaderResourceGroupSemantic\s+([A-Za-z_][A-Za-z0-9_]*)\b/gm },
-  { kind: vscode.SymbolKind.Constant, regex: /^\s*(?:static\s+)?option\s+([A-Za-z_][A-Za-z0-9_]*)\b/gm },
   {
     kind: vscode.SymbolKind.Function,
     regex: /^\s*(?:[A-Za-z_][A-Za-z0-9_<>:]*\s+)+([A-Za-z_][A-Za-z0-9_]*)\s*\(/gm
@@ -78,6 +78,20 @@ export function provideDocumentSymbols(document: vscode.TextDocument, token: vsc
 
       symbols.push(new vscode.DocumentSymbol(name, '', spec.kind, r, sel));
     }
+  }
+
+  // Option declarations have a type before the actual symbol and enum options
+  // may span several lines, so the generic one-capture regex above is not
+  // suitable for them.
+  const options = extractOptionDeclarations(text, document.uri.fsPath);
+  for (const [name, info] of options) {
+    if (token.isCancellationRequested) return symbols;
+    const lineText = document.lineAt(info.line).text;
+    const column = Math.max(0, lineText.indexOf(name));
+    const start = new vscode.Position(info.line, column);
+    const selection = new vscode.Range(start, start.translate(0, name.length));
+    const lineRange = new vscode.Range(new vscode.Position(info.line, 0), new vscode.Position(info.line, lineText.length));
+    symbols.push(new vscode.DocumentSymbol(name, '', vscode.SymbolKind.Constant, lineRange, selection));
   }
 
   symbols.sort((a, b) => a.range.start.compareTo(b.range.start));

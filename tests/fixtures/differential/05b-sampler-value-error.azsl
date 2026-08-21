@@ -1,0 +1,5 @@
+// Differential fixture: invalid sampler-state enum value.
+Sampler BadFilterSampler
+{
+    MinFilter = NOT_A_REAL_FILTER; // AZERR14: invalid MinFilter value
+};

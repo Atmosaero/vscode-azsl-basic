@@ -1,0 +1,19 @@
+struct GeometryOutput { float4 m_position : SV_Position; };
+
+GeometryOutput MainVS(float4 position : POSITION)
+{
+    GeometryOutput output;
+    output.m_position = position;
+    return output;
+}
+
+[maxvertexcount(-1)] // AZERR37: geometry shader declares a negative output vertex count
+void MainGS(point GeometryOutput inputVertices[1], inout PointStream<GeometryOutput> outputStream)
+{
+    outputStream.Append(inputVertices[0]);
+}
+
+float4 MainPS(GeometryOutput input) : SV_Target0
+{
+    return input.m_position;
+}

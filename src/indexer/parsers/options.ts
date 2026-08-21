@@ -46,10 +46,37 @@ export function extractOptionDeclarations(text: string, filePath: string): Map<s
       continue;
     }
 
-    const optionMatch = processedLine.match(/^\s*option\s+(?:static\s+)?(bool|int|uint)\s+([A-Za-z_][A-Za-z0-9_]*)\s*[=;]/);
+    const enumMatch = processedLine.match(/^\s*(?:(static)\s+)?option\s+(?:(static)\s+)?enum\s+class\s+[A-Za-z_][A-Za-z0-9_]*\b/);
+    if (enumMatch) {
+      const isStatic = Boolean(enumMatch[1] || enumMatch[2]);
+      let declaration = processedLine;
+      let declarationLine = i;
+      while (!/}\s*[A-Za-z_][A-Za-z0-9_]*\s*(?:=[^;]*)?;/.test(declaration) && i + 1 < lines.length) {
+        i++;
+        declaration += ` ${lines[i] || ''}`;
+        declarationLine = i;
+      }
+
+      const variableMatch = declaration.match(/}\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:=[^;]*)?;/);
+      if (variableMatch) {
+        const optionName = variableMatch[1];
+        results.set(optionName, {
+          name: optionName,
+          isStatic,
+          uri: vscode.Uri.file(filePath),
+          line: declarationLine
+        });
+      }
+      continue;
+    }
+
+    // AZSL options may use built-in scalar types or user-defined enum types.
+    const optionMatch = processedLine.match(
+      /^\s*(?:(static)\s+)?option\s+(?:(static)\s+)?[A-Za-z_][A-Za-z0-9_]*\s+([A-Za-z_][A-Za-z0-9_]*)\s*[=;]/
+    );
     if (optionMatch) {
-      const isStatic = processedLine.includes('static');
-      const optionName = optionMatch[2];
+      const isStatic = Boolean(optionMatch[1] || optionMatch[2]);
+      const optionName = optionMatch[3];
       if (!results.has(optionName)) {
         results.set(optionName, {
           name: optionName,

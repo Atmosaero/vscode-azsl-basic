@@ -1,0 +1,6 @@
+struct DuplicateMembers
+{
+    float m_value;
+    float m_value; // AZERR28: duplicate struct member
+};
+float4 MainPS() : SV_Target0 { return float4(1.0, 1.0, 1.0, 1.0); }

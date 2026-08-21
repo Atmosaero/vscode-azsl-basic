@@ -3,7 +3,7 @@
   "displayName": "AZSL Basic",
   "description": "Minimal syntax highlighting and language configuration for AZSL (O3DE/Atom).",
   "publisher": "Atmosaero",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -23,13 +23,20 @@
   "main": "./dist/extension.js",
   "scripts": {
     "compile": "tsc -p .",
+    "test": "vitest run",
+    "test:corpus": "vitest run tests/corpus.test.ts tests/diagnosticsCorpus.test.ts",
+    "test:differential": "vitest run tests/differentialDiagnostics.test.ts tests/differentialRound2.test.ts",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "watch": "tsc -p . -w",
     "vscode:prepublish": "npm run compile"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.70.0",
-    "typescript": "^5.0.0"
+    "@vitest/coverage-v8": "^3.2.6",
+    "typescript": "^5.0.0",
+    "vitest": "^3.2.6"
   },
   "activationEvents": [
     "onLanguage:azsl",
@@ -109,4 +116,3 @@
     ]
   }
 }
-

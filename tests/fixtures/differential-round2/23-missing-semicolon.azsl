@@ -1,0 +1,5 @@
+float4 MainPS() : SV_Target0
+{
+    float value = 1.0 // AZERR23: missing semicolon
+    return float4(value, value, value, 1.0);
+}

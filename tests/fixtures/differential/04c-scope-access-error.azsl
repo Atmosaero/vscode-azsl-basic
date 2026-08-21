@@ -1,0 +1,15 @@
+// Differential fixture: incomplete scope access.
+ShaderResourceGroupSemantic SRG_PerMaterial
+{
+    FrequencyId = 2;
+};
+
+ShaderResourceGroup SyntaxSrg : SRG_PerMaterial
+{
+    float m_value;
+};
+
+float BrokenScopeAccess()
+{
+    return SyntaxSrg::; // AZERR12: member missing after scope operator
+}

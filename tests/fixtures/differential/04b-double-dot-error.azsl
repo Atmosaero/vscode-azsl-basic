@@ -1,0 +1,5 @@
+// Differential fixture: doubled dot is isolated because parser recovery stops at the first syntax error.
+float BrokenDoubleDot(float4 value)
+{
+    return value..x; // AZERR11: doubled dot
+}

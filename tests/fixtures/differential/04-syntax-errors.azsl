@@ -1,0 +1,5 @@
+// Differential fixture: malformed dot access.
+float BrokenDotAccess(float4 value)
+{
+    return value.; // AZERR10: member missing after dot
+}

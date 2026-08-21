@@ -74,7 +74,15 @@ export function extractMacrosWithComments(text: string): ParsedMacro[] {
       if (defLine >= 0) {
         const docHead = collectPrecedingComment(i - 1);
         const doc = [docHead, inline].filter(Boolean).join('\n');
-        results.push({ name, value, line: defLine, doc });
+        const existing = results.find(result => result.name === name && result.line === defLine);
+        if (existing) {
+          // A header guard is still a single declaration. Prefer the comment
+          // attached to #ifndef because that is where guard documentation is
+          // conventionally placed.
+          if (doc) existing.doc = doc;
+        } else {
+          results.push({ name, value, line: defLine, doc });
+        }
       }
     }
   }

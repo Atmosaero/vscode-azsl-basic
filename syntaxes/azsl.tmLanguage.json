@@ -208,7 +208,7 @@
       "patterns": [
         {
           "name": "support.function.builtin.azsl",
-          "match": "\\b(mul|ddx|ddy|saturate|round|clamp|smoothstep|normalize|length|max|min|abs|dot|cross|pow|floor|ceil|frac|lerp|step)\\b"
+          "match": "\\b(mul|ddx|ddy|ddx_fine|ddy_fine|fwidth|saturate|round|clamp|smoothstep|normalize|length|max|min|abs|dot|cross|pow|floor|ceil|frac|lerp|step|sin|cos|sqrt|fmod|clip|rcp|exp|transpose)\\b"
         },
         {
           "name": "support.function.method.texture.azsl",

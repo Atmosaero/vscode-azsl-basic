@@ -34,3 +34,9 @@ Or use the command palette (`Ctrl+Shift+P`) and run `AZSL: Set Gem Path`.
 
 - **AZSL: Reindex Atom Headers** - Manually trigger reindexing of Atom Gem headers
 - **AZSL: Set Gem Path** - Set the path to Atom Gem directory
+
+## Testing
+
+The extension uses Vitest for TypeScript unit and integration tests. See
+[TESTING.md](TESTING.md) for coverage commands, optional Atom/ShaderKit corpus
+checks, and the current coverage-gap audit.

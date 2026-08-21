@@ -25,6 +25,7 @@ export function extractAtomMethods(text: string, filePath: string): ParsedAtomMe
   let currentClass: string | null = null;
   let inClass = false;
   let classBraceLevel = 0;
+  let classHasOpened = false;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] || '';
@@ -39,16 +40,11 @@ export function extractAtomMethods(text: string, filePath: string): ParsedAtomMe
       currentClass = classMatch[1];
       inClass = true;
       classBraceLevel = 0;
+      classHasOpened = line.includes('{');
 
       for (let j = 0; j < line.length; j++) {
         if (line[j] === '{') classBraceLevel++;
         else if (line[j] === '}') classBraceLevel--;
-      }
-
-      if (classBraceLevel === 0 && !line.includes('{')) {
-        if (i + 1 < lines.length && (lines[i + 1] || '').trim().startsWith('{')) {
-          classBraceLevel = 1;
-        }
       }
 
       continue;
@@ -56,14 +52,18 @@ export function extractAtomMethods(text: string, filePath: string): ParsedAtomMe
 
     if (inClass) {
       for (let j = 0; j < line.length; j++) {
-        if (line[j] === '{') classBraceLevel++;
+        if (line[j] === '{') {
+          classBraceLevel++;
+          classHasOpened = true;
+        }
         else if (line[j] === '}') classBraceLevel--;
       }
 
-      if (classBraceLevel < 0 && line.includes('};')) {
+      if (classHasOpened && classBraceLevel <= 0) {
         inClass = false;
         currentClass = null;
         classBraceLevel = 0;
+        classHasOpened = false;
         continue;
       }
     }

@@ -1,0 +1,3 @@
+// AZERR21: missing closing quote in include
+#include "Atom/Features/SrgSemantics.azsli
+float4 MainPS() : SV_Target0 { return float4(1.0, 0.0, 0.0, 1.0); }

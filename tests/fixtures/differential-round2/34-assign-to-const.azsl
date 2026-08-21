@@ -1,0 +1,6 @@
+float4 MainPS() : SV_Target0
+{
+    const float immutableValue = 1.0;
+    immutableValue = 2.0; // AZERR34: assignment to const
+    return float4(immutableValue, 0.0, 0.0, 1.0);
+}

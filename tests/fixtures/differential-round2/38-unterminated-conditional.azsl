@@ -1,0 +1,4 @@
+#if defined(ENABLE_BROKEN_BRANCH)
+float OptionalValue() { return 1.0; }
+// AZERR38: missing #endif
+float4 MainPS() : SV_Target0 { return float4(1.0, 1.0, 1.0, 1.0); }

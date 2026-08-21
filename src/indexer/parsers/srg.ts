@@ -49,7 +49,9 @@ export function extractSrgDeclarations(text: string, filePath: string): ParsedSr
     let braceDepth = 0;
 
     if (line.includes('{')) {
-      braceDepth = 1;
+      // The declaration line is scanned below, so start at zero to avoid
+      // counting its opening brace twice.
+      braceDepth = 0;
     } else if (i + 1 < lines.length && (lines[i + 1] || '').trim().startsWith('{')) {
       startLine = i + 1;
       braceDepth = 1;
